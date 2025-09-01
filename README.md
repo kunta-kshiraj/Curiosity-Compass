@@ -37,6 +37,9 @@ The game is turn-based and runs for **5 rounds**.
 - The game continues for **5 rounds**, rotating turns among players.  
 - After the final round, a **scoreboard** is displayed with total scores.
 
+
+### To run the web app
+- Go to the respected folder and enter live-server --port=3000
 ---
 
 ## 🛠 Technology Stack
