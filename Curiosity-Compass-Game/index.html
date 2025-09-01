@@ -1,0 +1,1456 @@
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Curiosity Compass</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+    window.firebase = { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, addDoc, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL };
+  </script>
+    <style>
+        html, body { height: 100%; margin: 0; }
+        body { background:#0f172a; } /* tailwind's gray-900 */
+    </style>
+</head>
+<body class="m-0">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, addDoc, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL } = window.firebase;
+
+    const appId = "default-app-id"; 
+    const firebaseConfig = {
+        apiKey: "AIzaSyDc55OaoUJPtbTchMwFgjw1X1B1chX6NKY",
+        authDomain: "curious-compass.firebaseapp.com",
+        projectId: "curious-compass",
+        storageBucket: "curious-compass.firebasestorage.app",
+        messagingSenderId: "1001869527107",
+        appId: "1:1001869527107:web:9009a531f0c8d196712cf6",
+        measurementId: "G-XDH2974C56"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+
+    const signIn = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (error) {
+        console.error('Firebase authentication error:', error);
+      }
+    };
+
+    const GEMINI_API_KEY = "AIzaSyAOjZmejVF_H510N3-vSLSxCeNGKBvAeKg";
+    const GEMINI_MODEL = 'gemini-1.5-flash';
+    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+    const App = () => {
+      const [user, setUser] = useState(null);
+      const [isAuthReady, setIsAuthReady] = useState(false);
+      const [page, setPage] = useState('home');
+      const [roomId, setRoomId] = useState('');
+      const [playerInput, setPlayerInput] = useState('');
+      const [displayName, setDisplayName] = 
+          useState( () => localStorage.getItem('cc_name') || '' );
+      const [players, setPlayers] = useState([]);
+      const [riddle, setRiddle] = useState('');
+      const [timer, setTimer] = useState(0);
+      const [gameMessage, setGameMessage] = useState('Waiting for players...');
+      const [gameData, setGameData] = useState({});
+      const [guess, setGuess] = useState('');
+      const [imageFile, setImageFile] = useState(null);
+      const [hints, setHints] = useState([]);
+      const timerRef = useRef(null);
+      const [finalScoreboard, setFinalScoreboard] = useState(null);
+
+
+      useEffect(() => {
+        onAuthStateChanged(auth, (user) => {
+          setUser(user);
+          setIsAuthReady(true);
+        });
+        signIn();
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomFromUrl = urlParams.get('room');
+         if (roomFromUrl) {
+        setPlayerInput(roomFromUrl);
+        // Only auto-join if we already have a saved name
+        if (localStorage.getItem('cc_name')) {
+            joinRoom(roomFromUrl);
+        }
+        }
+      }, []);
+
+      useEffect(() => {
+        if (user && roomId) {
+          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+          const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              setGameData(data);
+              const sortedPlayers = Object.values(data.players || {}).sort((a, b) => a.joinIndex - b.joinIndex);
+              setPlayers(sortedPlayers);
+              setRiddle(data.riddle || '');
+              setTimer(data.timer);
+              setGameMessage(data.gameMessage || '');
+              setHints(data.hints || []);
+              if (data.status === 'game_over') {
+                setFinalScoreboard(sortedPlayers);
+                setPage('game-over');
+              } else if(data.status === 'in_progress' && page !== 'game-room') {
+                setPage('game-room');
+              }
+            } else {
+              setPage('home');
+              alert('Room not found or deleted.');
+            }
+          });
+          return () => unsubscribe();
+        }
+      }, [user, roomId]);
+
+      useEffect(() => {
+        if (gameData.status === 'in_progress' && user && gameData.turn === user.uid) {
+            timerRef.current = setInterval(async () => {
+                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+                const snapshot = await getDoc(roomRef);
+                if (snapshot.exists()) {
+                    const currentTimer = snapshot.data().timer;
+                    if (currentTimer > 0) {
+                        await updateDoc(roomRef, {
+                            timer: currentTimer - 1,
+                        });
+                    } else {
+                        clearInterval(timerRef.current);
+                        await handleTurnEnd();
+                    }
+                }
+            }, 1000);
+        } else {
+            clearInterval(timerRef.current);
+        }
+        return () => clearInterval(timerRef.current);
+      }, [gameData.status, gameData.turn]);
+
+  useEffect(() => {
+    if (
+      gameData.status === 'in_progress' &&
+      gameData.roundStatus === 'guessing' &&
+      user &&
+      gameData.turn === user.uid &&           // single source of truth
+      timer > 0
+    ) {
+      if (timer === 35 && (gameData.allHints?.length || 0) > 0 && (gameData.hints?.length || 0) < 1) {
+        addHint(0);
+      }
+      if (timer === 20 && (gameData.allHints?.length || 0) > 1 && (gameData.hints?.length || 0) < 2) {
+        addHint(1);
+      }
+    }
+  }, [timer, gameData.status, gameData.roundStatus, gameData.turn, gameData.allHints, gameData.hints, user]);
+
+      const addHint = async (hintIndex) => {
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const label = `Hint ${hintIndex + 1}: ${gameData.allHints[hintIndex]}`;
+        if ((gameData.hints || []).some(h => h.startsWith(`Hint ${hintIndex + 1}:`))) return;
+        const updatedHints = [...(gameData.hints || []), label];
+        await updateDoc(roomRef, { hints: updatedHints });
+      };
+
+    const handleNameChange = (e) => { const v = e.target.value;
+    setDisplayName(v);
+    localStorage.setItem('cc_name', v); }; 
+
+      const createRoom = async () => {
+        if (!user) return;
+        const newRoomId = Math.random().toString(36).substring(2, 8);
+        const initialPlayers = {
+          [user.uid]: {
+            id: user.uid,
+            name: (displayName || '').trim() || `Player ${Math.floor(Math.random() * 100)}`,
+            score: 0,
+            joinIndex: 0,
+          },
+        };
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', newRoomId);
+        await setDoc(roomRef, {
+          id: newRoomId,
+          players: initialPlayers,
+          status: 'waiting',
+          turn: user.uid,
+          riddle: '',
+          correctAnswer: '',
+          timer: 30,
+          guesses: {},
+          winner: null,
+          gameMessage: `Waiting for players...`,
+          allHints: [],
+          roundNumber: 0,
+          roundStatus: 'submitting',
+        });
+        setRoomId(newRoomId);
+        setPage('game-lobby');
+      };
+
+      const joinRoom = async (inputRoomId = playerInput) => {
+        if (!user || !inputRoomId) return;
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', inputRoomId);
+        const roomSnap = await getDoc(roomRef);
+
+        if (roomSnap.exists()) {
+          const roomData = roomSnap.data();
+          if (roomData.status !== 'waiting') {
+            alert('Cannot join, game has already started.');
+            return;
+          }
+          const newPlayer = {
+            id: user.uid,
+            name: (displayName || '').trim() || `Player ${Math.floor(Math.random() * 100)}`,
+            score: 0,
+            joinIndex: Object.keys(roomData.players).length,
+          };
+          await updateDoc(roomRef, {
+            [`players.${user.uid}`]: newPlayer,
+          });
+          setRoomId(inputRoomId);
+          setPage('game-lobby');
+        } else {
+          alert('Room ID not found!');
+        }
+      };
+
+      const startGame = async () => {
+        if (players.length < 2) {
+          alert('Need at least 2 players to start!');
+          return;
+        }
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        await updateDoc(roomRef, {
+          status: 'in_progress',
+          gameMessage: `It is ${gameData.players[gameData.turn].name}'s turn to submit an object!`,
+        });
+        setPage('game-room');
+      };
+
+      const handleTurnEnd = async () => {
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const roomSnap = await getDoc(roomRef);
+        const currentData = roomSnap.data();
+        const sortedPlayers = Object.values(currentData.players).sort((a, b) => a.joinIndex - b.joinIndex);
+        const sortedPlayerIds = sortedPlayers.map(p => p.id);
+        const currentTurnIndex = sortedPlayerIds.indexOf(currentData.turn);
+        const nextTurnIndex = (currentTurnIndex + 1) % sortedPlayerIds.length;
+        const nextPlayerId = sortedPlayerIds[nextTurnIndex];
+
+        if(currentData.roundNumber + 1 > 5) {
+          await updateDoc(roomRef, { status: 'game_over', gameMessage: 'Game Over!' });
+          return;
+        }
+
+        await updateDoc(roomRef, {
+          turn: nextPlayerId,
+          riddle: '',
+          correctAnswer: '',
+          timer: 30,
+          guesses: {},
+          hints: [],
+          allHints: [],
+          correctGuessers: [],  
+          roundNumber: currentData.roundNumber + 1,
+          roundStatus: 'submitting',
+          gameMessage: `Round ${currentData.roundNumber + 1}: It is ${currentData.players[nextPlayerId].name}'s turn to submit an object!`,
+        });
+        setPlayerInput('');
+        setImageFile(null);
+      };
+
+      const submitObject = async () => {
+        if (!user || gameData.turn !== user.uid || (!playerInput && !imageFile)) return;
+        setGameMessage('Processing your submission...');
+        let objectDescription = '';
+        let imageBase64 = '';
+        if (imageFile) {
+            const reader = new FileReader();
+            reader.readAsDataURL(imageFile);
+            reader.onload = async () => {
+                const base64String = reader.result.split(',')[1];
+                imageBase64 = base64String;
+                objectDescription = await identifyObjectFromImage(base64String);
+                if(objectDescription) {
+                    await generateAndPostRiddle(objectDescription);
+                }
+            };
+        } else {
+            objectDescription = playerInput;
+            await generateAndPostRiddle(objectDescription);
+        }
+      };
+
+      const identifyObjectFromImage = async (base64Data) => {
+        const prompt = "Describe the main object in this image in one or two words. For example, 'A red ball', 'A wooden chair', 'A blue cup'.";
+        try {
+            const payload = {
+                contents: [
+                    {
+                        role: 'user',
+                        parts: [
+                            { text: prompt },
+                            { inlineData: { mimeType: 'image/jpeg', data: base64Data } }
+                        ]
+                    }
+                ]
+            };
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            const detectedText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+            return detectedText || '';
+        } catch (error) {
+            console.error('Image analysis error:', error);
+            setGameMessage('Error analyzing image. Please try again.');
+            return '';
+        }
+      };
+
+      const generateAndPostRiddle = async (objectDescription) => {
+        const prompt = `You are a riddle-master for a children's game. The word is "${objectDescription}". Create a short, fun riddle for children that has "${objectDescription}" as the answer. Also, provide three simple hints. Do not include the answer in your response. Respond in a JSON format with 'riddle', 'hints', and 'answer' fields.`;
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        try {
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            riddle: { type: "STRING" },
+                            hints: { type: "ARRAY", items: { type: "STRING" } },
+                            answer: { type: "STRING" }
+                        },
+                        propertyOrdering: ["riddle", "hints", "answer"]
+                    }
+                }
+            };
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            const jsonString = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+            const parsedJson = JSON.parse(jsonString);
+            if (parsedJson && parsedJson.riddle && parsedJson.answer) {
+                await updateDoc(roomRef, {
+                    riddle: parsedJson.riddle,
+                    correctAnswer: parsedJson.answer.toLowerCase(),
+                    allHints: parsedJson.hints || [],
+                    hints:[],
+                    timer: 70,
+                    gameMessage: `A new riddle has been generated! Guess what it is!`,
+                    roundStatus: 'guessing',
+                });
+            } else {
+                setGameMessage('Could not generate a riddle. Please try again.');
+            }
+        } catch (error) {
+            console.error('Riddle generation error:', error);
+            setGameMessage('Error generating riddle. Please try again.');
+        }
+      };
+
+      const handleGuess = async () => {
+        if (!user || !guess) return;
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const roomSnap = await getDoc(roomRef);
+        const currentData = roomSnap.data();
+        const newGuesses = { ...currentData.guesses, [user.uid]: guess };
+        
+        if (guess.toLowerCase().includes(currentData.correctAnswer.toLowerCase())) {
+            const score = 100 - Math.max(0, 70 - currentData.timer);
+            const updatedPlayers = { ...currentData.players };
+            updatedPlayers[user.uid].score += score;
+            await updateDoc(roomRef, {
+                [`players.${user.uid}.score`]: updatedPlayers[user.uid].score,
+                gameMessage: `${updatedPlayers[user.uid].name} guessed correctly! The answer was: ${currentData.correctAnswer}`,
+                roundStatus: 'round_over',
+                guesses: newGuesses,
+            });
+            setTimeout(handleTurnEnd, 5000);
+        } else {
+            await updateDoc(roomRef, {
+                gameMessage: `${currentData.players[user.uid].name} guessed "${guess}". That's not it!`,
+                guesses: newGuesses,
+            });
+        }
+        setGuess('');
+      };
+
+      const renderHome = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 min-h-screen font-sans">
+          <h1 className="text-5xl font-bold mb-8 text-indigo-400 animate-pulse">Curiosity Compass</h1>
+          <p className="text-xl mb-8 text-center text-gray-300">
+            The ultimate riddle-solving game. Take turns creating riddles from objects for your friends to guess.
+          </p>
+         <div className="w-full max-w-xl space-y-4">
+            <input
+                type="text"
+                value={displayName}
+                onChange={handleNameChange}
+                placeholder="Your name (e.g., John)"
+                className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
+            />
+            <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+            <button
+              onClick={createRoom}
+              disabled={!displayName.trim()}
+              className="w-full md:w-auto px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+            >
+              Create New Room
+            </button>
+            <div className="flex flex-col space-y-2">
+              <input
+                type="text"
+                value={playerInput}
+                onChange={(e) => setPlayerInput(e.target.value)}
+                placeholder="Enter Room ID"
+                className="px-4 py-3 text-lg rounded-lg text-gray-900"
+              />
+              <button
+                onClick={() => joinRoom()}
+                disabled={!displayName.trim() || !playerInput.trim()}
+                className="w-full px-8 py-3 text-lg font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+              >
+                Join Room
+              </button>
+            </div>
+            </div>
+          </div>
+        </div>
+      );
+
+      const renderGameLobby = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
+          <h1 className="text-4xl font-bold mb-4 text-indigo-400">Game Lobby</h1>
+          <p className="text-xl mb-4 text-center">
+            Share this Room ID with your friends:
+            <span className="font-mono text-2xl bg-gray-800 px-3 py-1 rounded-lg ml-2">{roomId}</span>
+          </p>
+          <p className="text-xl mb-4 text-center">
+            Or use this shareable link:
+            <a href={`${window.location.origin}?room=${roomId}`} className="font-mono text-xl bg-gray-800 px-3 py-1 rounded-lg ml-2 text-blue-400 underline">
+              {`${window.location.origin}?room=${roomId}`}
+            </a>
+          </p>
+          <div className="bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-md">
+            <h2 className="text-2xl font-semibold mb-4 text-center">Players ({players.length})</h2>
+            <ul className="space-y-2">
+              {players.map((player) => (
+                <li key={player.id} className="text-lg bg-gray-700 p-3 rounded-lg flex justify-between items-center">
+                  <span>{player.name}</span>
+                  <span className="font-bold text-green-400">{player.score} pts</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button
+            onClick={startGame}
+            className="mt-8 px-8 py-4 text-xl font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+          >
+            Start Game
+          </button>
+        </div>
+      );
+
+      const renderGameRoom = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
+          <h1 className="text-4xl font-bold mb-6 text-indigo-400">Riddle Game</h1>
+          <div className="w-full max-w-4xl bg-gray-800 p-8 rounded-lg shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <span className="text-xl font-semibold">Current Turn: {gameData.players?.[gameData.turn]?.name}</span>
+              <span className="text-4xl font-bold text-red-400">{timer}s</span>
+            </div>
+
+            <div className="bg-gray-700 p-6 rounded-lg text-center mb-6 min-h-[150px] flex items-center justify-center">
+              {gameData.status === 'in_progress' && gameData.roundStatus === 'guessing' && (
+                <div className="flex flex-col">
+                  <p className="text-2xl font-medium text-yellow-300 animate-fade-in">{riddle}</p>
+                  {hints.length > 0 && (
+                    <div className="mt-4 text-left">
+                      <h3 className="text-xl font-semibold text-gray-200">Hints:</h3>
+                      <ul className="list-disc list-inside space-y-1 mt-2">
+                        {hints.map((hint, index) => (
+                          <li key={index} className="text-lg text-gray-300">{hint}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+              {gameData.roundStatus === 'submitting' && gameData.turn !== user.uid && (
+                  <p className="text-xl text-gray-400">Waiting for {gameData.players?.[gameData.turn]?.name} to submit an object...</p>
+              )}
+              {gameData.roundStatus === 'round_over' && (
+                  <p className="text-3xl font-bold text-green-400 animate-pulse">{gameMessage}</p>
+              )}
+            </div>
+
+            {gameData.status === 'in_progress' && gameData.roundStatus === 'guessing' && gameData.turn !== user.uid && (
+              <div className="flex flex-col items-center space-y-4">
+                <input
+                  type="text"
+                  value={guess}
+                  onChange={(e) => setGuess(e.target.value)}
+                  placeholder="Your guess..."
+                  className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') handleGuess();
+                  }}
+                />
+                <button
+                  onClick={handleGuess}
+                  className="w-full md:w-1/2 px-8 py-4 text-xl font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+                >
+                  Guess
+                </button>
+              </div>
+            )}
+
+            {gameData.status === 'in_progress' && gameData.roundStatus === 'submitting' && gameData.turn === user.uid && (
+              <div className="flex flex-col items-center space-y-4">
+                <h2 className="text-2xl font-semibold">Submit an Object</h2>
+                <p className="text-lg text-center text-gray-400">
+                  Your turn! Take a photo, type a word, or describe something. The AI will turn it into a riddle.
+                </p>
+                <input
+                  type="text"
+                  value={playerInput}
+                  onChange={(e) => setPlayerInput(e.target.value)}
+                  placeholder="e.g., 'A tennis racket'"
+                  className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
+                />
+                <span className="text-gray-400">OR</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files[0])}
+                  className="w-full text-lg text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                />
+                <button
+                  onClick={submitObject}
+                  className="w-full md:w-1/2 px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+                >
+                  Submit
+                </button>
+              </div>
+            )}
+
+            <div className="mt-8 bg-gray-700 p-6 rounded-lg">
+              <h2 className="text-2xl font-semibold mb-4 text-center">Scoreboard</h2>
+              <ul className="space-y-2">
+                {players.map((player) => (
+                  <li key={player.id} className="text-lg bg-gray-600 p-3 rounded-lg flex justify-between items-center">
+                    <span>{player.name}</span>
+                    <span className="font-bold text-green-400">{player.score} pts</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      );
+
+      const renderGameOver = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
+          <h1 className="text-5xl font-bold mb-8 text-green-400">Game Over!</h1>
+          <h2 className="text-3xl font-semibold mb-4">Final Scoreboard</h2>
+          <div className="bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-md">
+            <ul className="space-y-2">
+              {finalScoreboard.map((player) => (
+                <li key={player.id} className="text-lg bg-gray-700 p-3 rounded-lg flex justify-between items-center">
+                  <span>{player.name}</span>
+                  <span className="font-bold text-green-400">{player.score} pts</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-8 px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+          >
+            Play Again
+          </button>
+        </div>
+      );
+
+      if (!isAuthReady) {
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
+            <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-indigo-500"></div>
+            <p className="ml-4 text-2xl">Loading...</p>
+          </div>
+        );
+      }
+
+      switch (page) {
+        case 'home':
+          return renderHome();
+        case 'game-lobby':
+          return renderGameLobby();
+        case 'game-room':
+          return renderGameRoom();
+        case 'game-over':
+          return renderGameOver();
+        default:
+          return renderHome();
+      }
+    };
+
+    ReactDOM.render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+      document.getElementById('root')
+    );
+  </script>
+</body>
+</html> -->
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Curiosity Compass</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase imports -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+    window.firebase = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL };
+  </script>
+
+  <!-- Remove default body margin; dark background -->
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { background: #0f172a; } /* tailwind gray-900 */
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body class="m-0">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const {
+      initializeApp, getAuth, signInAnonymously, onAuthStateChanged,
+      getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc
+    } = window.firebase;
+
+    // ---- Timing constants (single source of truth) ----
+    const SUBMIT_SECONDS = 45;     // time to give a word / upload
+    const GUESS_SECONDS  = 70;     // time for participants to answer
+    const HINT1_AT       = 35;     // seconds remaining
+    const HINT2_AT       = 20;     // seconds remaining
+    const WRONG_POPUP_MS = 2500;   // wrong-answer popup duration
+
+    // App + Firebase
+    const appId = "default-app-id";
+    const firebaseConfig = {
+      apiKey: "AIzaSyDc55OaoUJPtbTchMwFgjw1X1B1chX6NKY",
+      authDomain: "curious-compass.firebaseapp.com",
+      projectId: "curious-compass",
+      storageBucket: "curious-compass.firebasestorage.app",
+      messagingSenderId: "1001869527107",
+      appId: "1:1001869527107:web:9009a531f0c8d196712cf6",
+      measurementId: "G-XDH2974C56"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+
+    const signIn = async () => {
+      try { await signInAnonymously(auth); }
+      catch (e) { console.error("Firebase auth error:", e); }
+    };
+
+    // Gemini
+    const GEMINI_API_KEY = "AIzaSyAOjZmejVF_H510N3-vSLSxCeNGKBvAeKg";
+    const GEMINI_MODEL = "gemini-1.5-flash";
+    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+    function App() {
+      // Core state
+      const [user, setUser] = useState(null);
+      const [isAuthReady, setIsAuthReady] = useState(false);
+      const [page, setPage] = useState("home");
+
+      const [roomId, setRoomId] = useState("");
+      const [playerInput, setPlayerInput] = useState("");
+
+      const [displayName, setDisplayName] = useState(() => localStorage.getItem("cc_name") || "");
+
+      const [players, setPlayers] = useState([]);
+      const [riddle, setRiddle] = useState("");
+      const [timer, setTimer] = useState(0);
+      const [gameMessage, setGameMessage] = useState("Waiting for players...");
+      const [gameData, setGameData] = useState({});
+      const [guess, setGuess] = useState("");
+      const [imageFile, setImageFile] = useState(null);
+      const [hints, setHints] = useState([]);
+      const [finalScoreboard, setFinalScoreboard] = useState(null);
+      const [isDetecting, setIsDetecting] = useState(false);
+      // Wrong-answer popup (local-only)
+      const [showWrongPopup, setShowWrongPopup] = useState(false);
+      const [wrongPopupText, setWrongPopupText] = useState("Wrong answer!");
+
+      // Turn timer driver (only on the turn-owner client)
+      const timerRef = useRef(null);
+
+      // Auth + deep-link auto-join (only if name is already saved)
+      useEffect(() => {
+        onAuthStateChanged(auth, (u) => {
+          setUser(u);
+          setIsAuthReady(true);
+        });
+        signIn();
+
+        const params = new URLSearchParams(window.location.search);
+        const roomFromUrl = params.get("room");
+        if (roomFromUrl) {
+          setPlayerInput(roomFromUrl);
+          if (localStorage.getItem("cc_name")) {
+            joinRoom(roomFromUrl);
+          }
+        }
+      }, []);
+
+      // Subscribe to current room
+      useEffect(() => {
+        if (user && roomId) {
+          const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+          const unsub = onSnapshot(roomRef, (snap) => {
+            if (snap.exists()) {
+              const data = snap.data();
+              setGameData(data);
+
+              const sorted = Object.values(data.players || {}).sort((a,b)=>a.joinIndex - b.joinIndex);
+              setPlayers(sorted);
+
+              setRiddle(data.riddle || "");
+              setTimer(data.timer ?? 0);
+              setGameMessage(data.gameMessage || "");
+              setHints(data.hints || []);
+
+              if (data.status === "game_over") {
+                setFinalScoreboard(sorted);
+                setPage("game-over");
+              } else if (data.status === "in_progress" && page !== "game-room") {
+                setPage("game-room");
+              }
+            } else {
+              setPage("home");
+              alert("Room not found or deleted.");
+            }
+          });
+          return () => unsub();
+        }
+      }, [user, roomId]);
+
+      // Drive the countdown on the turn-owner only
+      useEffect(() => {
+        if (gameData.status === "in_progress" && user && gameData.turn === user.uid) {
+          timerRef.current = setInterval(async () => {
+            const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+            const snap = await getDoc(roomRef);
+            if (snap.exists()) {
+              const t = snap.data().timer ?? 0;
+              if (t > 0) {
+                await updateDoc(roomRef, { timer: t - 1 });
+              } else {
+                clearInterval(timerRef.current);
+                await handleTurnEnd(); // time up → next turn
+              }
+            }
+          }, 1000);
+        } else {
+          clearInterval(timerRef.current);
+        }
+        return () => clearInterval(timerRef.current);
+      }, [gameData.status, gameData.turn]);
+
+      // Hint reveal (only by turn-owner; once at 35s and 20s)
+      useEffect(() => {
+        if (
+          gameData.status === "in_progress" &&
+          gameData.roundStatus === "guessing" &&
+          user &&
+          gameData.turn === user.uid &&
+          timer > 0
+        ) {
+          if (timer === HINT1_AT && (gameData.allHints?.length || 0) > 0 && (gameData.hints?.length || 0) < 1) {
+            addHint(0);
+          }
+          if (timer === HINT2_AT && (gameData.allHints?.length || 0) > 1 && (gameData.hints?.length || 0) < 2) {
+            addHint(1);
+          }
+        }
+      }, [timer, gameData.status, gameData.roundStatus, gameData.turn, gameData.allHints, gameData.hints, user]);
+
+      const addHint = async (hintIndex) => {
+        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+        const label = `Hint ${hintIndex + 1}: ${gameData.allHints[hintIndex]}`;
+        if ((gameData.hints || []).some(h => h.startsWith(`Hint ${hintIndex + 1}:`))) return; // idempotent
+        const updatedHints = [...(gameData.hints || []), label];
+        await updateDoc(roomRef, { hints: updatedHints });
+      };
+
+      // Name handling
+      const handleNameChange = (e) => {
+        const v = e.target.value;
+        setDisplayName(v);
+        localStorage.setItem("cc_name", v);
+      };
+
+      // Create room: submit phase (45s)
+      const createRoom = async () => {
+        if (!user) return;
+        const newRoomId = Math.random().toString(36).substring(2, 8);
+        const initialPlayers = {
+          [user.uid]: {
+            id: user.uid,
+            name: (displayName || "").trim() || `Player ${Math.floor(Math.random() * 100)}`,
+            score: 0,
+            joinIndex: 0,
+          },
+        };
+        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", newRoomId);
+        await setDoc(roomRef, {
+          id: newRoomId,
+          players: initialPlayers,
+          status: "waiting",
+          turn: user.uid,
+          riddle: "",
+          correctAnswer: "",
+          timer: SUBMIT_SECONDS,   // submit phase 45s
+          guesses: {},
+          winner: null,
+          gameMessage: "Waiting for players...",
+          allHints: [],
+          hints: [],
+          correctGuessers: [],
+          roundNumber: 0,
+          roundStatus: "submitting",
+        });
+        setRoomId(newRoomId);
+        setPage("game-lobby");
+      };
+
+      // Join room
+      const joinRoom = async (inputRoomId = playerInput) => {
+        if (!user || !inputRoomId) return;
+        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", inputRoomId);
+        const snap = await getDoc(roomRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.status !== "waiting") {
+            alert("Cannot join, game has already started.");
+            return;
+          }
+          const newPlayer = {
+            id: user.uid,
+            name: (displayName || "").trim() || `Player ${Math.floor(Math.random() * 100)}`,
+            score: 0,
+            joinIndex: Object.keys(data.players).length,
+          };
+          await updateDoc(roomRef, { [`players.${user.uid}`]: newPlayer });
+          setRoomId(inputRoomId);
+          setPage("game-lobby");
+        } else {
+          alert("Room ID not found!");
+        }
+      };
+
+      // Start game
+      const startGame = async () => {
+        if (players.length < 2) {
+          alert("Need at least 2 players to start!");
+          return;
+        }
+        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+        await updateDoc(roomRef, {
+          status: "in_progress",
+          gameMessage: `It is ${gameData.players[gameData.turn].name}'s turn to submit an object!`,
+        });
+        setPage("game-room");
+      };
+
+      // End of turn (time up or after everyone solved previous round)
+      const handleTurnEnd = async () => {
+        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+        const snap = await getDoc(roomRef);
+        const currentData = snap.data();
+        const sortedPlayers = Object.values(currentData.players).sort((a,b)=>a.joinIndex - b.joinIndex);
+        const sortedIds = sortedPlayers.map(p => p.id);
+        const currentIdx = sortedIds.indexOf(currentData.turn);
+        const nextIdx = (currentIdx + 1) % sortedIds.length;
+        const nextPlayerId = sortedIds[nextIdx];
+
+        if (currentData.roundNumber + 1 > 5) {
+          await updateDoc(roomRef, { status: "game_over", gameMessage: "Game Over!" });
+          return;
+        }
+
+        await updateDoc(roomRef, {
+          turn: nextPlayerId,
+          riddle: "",
+          correctAnswer: "",
+          timer: SUBMIT_SECONDS,   // next submit phase
+          guesses: {},
+          hints: [],
+          allHints: [],
+          correctGuessers: [],
+          roundNumber: currentData.roundNumber + 1,
+          roundStatus: "submitting",
+          gameMessage: `Round ${currentData.roundNumber + 1}: It is ${currentData.players[nextPlayerId].name}'s turn to submit an object!`,
+        });
+        setPlayerInput("");
+        setImageFile(null);
+      };
+
+      // Submit an object (word or image)
+      const submitObject = async () => {
+        if (!user || gameData.turn !== user.uid || (!playerInput && !imageFile)) return;
+        setGameMessage("Processing your submission...");
+
+        let objectDescription = "";
+        if (imageFile) {
+          const reader = new FileReader();
+          reader.readAsDataURL(imageFile);
+          reader.onload = async () => {
+            const base64String = reader.result.split(",")[1];
+            objectDescription = await identifyObjectFromImage(base64String);
+            if (objectDescription) await generateAndPostRiddle(objectDescription);
+          };
+        } else {
+          objectDescription = playerInput;
+          await generateAndPostRiddle(objectDescription);
+        }
+      };
+
+      // Vision helper
+      const identifyObjectFromImage = async (base64Data, mimeType = "image/jpeg") => {
+        const prompt = "Describe the main object in this image in one or two words. For example, 'A red ball', 'A wooden chair', 'A blue cup'.";
+        try {
+            const payload = {
+            contents: [
+                {
+                role: "user",
+                parts: [
+                    { text: prompt },
+                    { inlineData: { mimeType, data: base64Data } }
+                ]
+                }
+            ]
+            };
+            const response = await fetch(API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            // Gemini sometimes returns quotes around short strings; strip them
+            const detectedText = (result?.candidates?.[0]?.content?.parts?.[0]?.text || "")
+            .trim()
+            .replace(/^"(.*)"$/, "$1");
+            return detectedText;
+        } catch (error) {
+            console.error("Image analysis error:", error);
+            setGameMessage("Error analyzing image. Please try again.");
+            return "";
+        }
+        };
+
+        const handleImagePick = (e) => {
+  const file = e.target.files?.[0];
+  setImageFile(file || null);
+  if (!file) return;
+
+  setIsDetecting(true);
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const dataUrl = reader.result || "";
+      const base64 = String(dataUrl).split(",")[1] || "";
+      const mime = file.type || "image/jpeg";
+      const desc = await identifyObjectFromImage(base64, mime);
+      if (desc) {
+        // Auto-fill the input with what AI detected so the user can edit before submit
+        setPlayerInput(desc);
+      }
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+  reader.readAsDataURL(file);
+};
+
+
+
+      // Generate riddle and start guessing phase
+      const generateAndPostRiddle = async (objectDescription) => {
+        const prompt = `You are a riddle-master for a children's game. The word is "${objectDescription}". Create a short, fun riddle for children that has "${objectDescription}" as the answer. Also, provide three simple hints. Do not include the answer in your response. Respond in a JSON format with 'riddle', 'hints', and 'answer' fields.`;
+        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+        try {
+          const payload = {
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  riddle: { type: "STRING" },
+                  hints: { type: "ARRAY", items: { type: "STRING" } },
+                  answer: { type: "STRING" }
+                },
+                propertyOrdering: ["riddle", "hints", "answer"]
+              }
+            }
+          };
+          const res = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          const result = await res.json();
+
+          // Robust parse
+          const raw = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          let parsed = null;
+          try { parsed = JSON.parse(raw); }
+          catch {
+            const m = raw.match(/\{[\s\S]*\}/);
+            if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
+          }
+
+          if (parsed && parsed.riddle && parsed.answer) {
+            await updateDoc(roomRef, {
+              riddle: parsed.riddle,
+              correctAnswer: (parsed.answer || "").toLowerCase(),
+              allHints: parsed.hints || [],
+              hints: [],
+              correctGuessers: [],
+              timer: GUESS_SECONDS, // guessing phase 70s
+              gameMessage: "A new riddle has been generated! Guess what it is!",
+              roundStatus: "guessing",
+            });
+          } else {
+            await updateDoc(roomRef, {
+              roundStatus: "submitting",
+              gameMessage: "Could not generate a riddle. Please try again with a simpler word."
+            });
+          }
+        } catch (e) {
+          console.error("Riddle generation error:", e);
+          await updateDoc(roomRef, {
+            roundStatus: "submitting",
+            gameMessage: "Error generating riddle. Please try again."
+          });
+        }
+      };
+
+      // Handle guess: all non-turn players must solve OR timer hits 0
+      const handleGuess = async () => {
+  if (!user || !guess) return;
+
+  const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+  const snap = await getDoc(roomRef);
+  if (!snap.exists()) return;
+
+  const data = snap.data();
+
+  // If the UI somehow allowed a guess outside "guessing", bail gracefully
+  if (data.roundStatus !== "guessing") {
+    // optional: small local toast; don't treat as wrong/ right
+    setWrongPopupText("⏳ Not ready yet—wait for the riddle.");
+    setShowWrongPopup(true);
+    setTimeout(() => setShowWrongPopup(false), WRONG_POPUP_MS);
+    return;
+  }
+
+  const newGuesses = { ...(data.guesses || {}), [user.uid]: guess };
+  const alreadyCorrect = (data.correctGuessers || []).includes(user.uid);
+  if (alreadyCorrect) {
+    await updateDoc(roomRef, {
+      guesses: newGuesses,
+      gameMessage: `${data.players[user.uid].name} already solved it.`
+    });
+    setGuess("");
+    return;
+  }
+
+  const isCorrect = guess.trim().toLowerCase()
+    .includes((data.correctAnswer || "").toLowerCase());
+
+  if (!isCorrect) {
+    // ✅ Show popup immediately (local-only), then write to Firestore
+    setWrongPopupText("❌ Wrong answer! Try again.");
+    setShowWrongPopup(true);
+    try { navigator.vibrate && navigator.vibrate(50); } catch {}
+    setTimeout(() => setShowWrongPopup(false), WRONG_POPUP_MS);
+
+    await updateDoc(roomRef, {
+      guesses: newGuesses,
+      gameMessage: `${data.players[user.uid].name} guessed "${guess}". ❌ Wrong answer!`,
+    });
+    setGuess("");
+    return;
+  }
+
+  // correct path
+  const playerCount = Object.keys(data.players || {}).length;
+  const totalNeedToSolve = Math.max(0, playerCount - 1);
+
+  const updatedPlayers = { ...data.players };
+  const score = 100 - Math.max(0, GUESS_SECONDS - (data.timer || 0));
+  updatedPlayers[user.uid].score = (updatedPlayers[user.uid].score || 0) + score;
+
+  const newCorrectCount = (data.correctGuessers?.length || 0) + 1;
+  const baseUpdate = {
+    [`players.${user.uid}.score`]: updatedPlayers[user.uid].score,
+    guesses: newGuesses,
+    correctGuessers: [...(data.correctGuessers || []), user.uid],
+  };
+
+  if (newCorrectCount >= totalNeedToSolve && totalNeedToSolve > 0) {
+    await updateDoc(roomRef, {
+      ...baseUpdate,
+      roundStatus: "round_over",
+      gameMessage: `${updatedPlayers[user.uid].name} solved it — and everyone else did too! Answer: ${data.correctAnswer}`,
+    });
+    setTimeout(handleTurnEnd, 5000);
+  } else {
+    await updateDoc(roomRef, {
+      ...baseUpdate,
+      gameMessage: `${updatedPlayers[user.uid].name} guessed correctly! ✅ Waiting for others...`,
+    });
+  }
+
+  setGuess("");
+};
+
+
+      // UI: Home
+      const renderHome = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 min-h-screen font-sans">
+          <h1 className="text-5xl font-bold mb-8 text-indigo-400 animate-pulse">Curiosity Compass</h1>
+          <p className="text-xl mb-8 text-center text-gray-300">
+            The ultimate riddle-solving game. Take turns creating riddles from objects for your friends to guess.
+          </p>
+
+          <div className="w-full max-w-xl space-y-4">
+            <input
+              type="text"
+              value={displayName}
+              onChange={handleNameChange}
+              placeholder="Your name (e.g., John)"
+              className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
+            />
+            <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+              <button
+                onClick={createRoom}
+                disabled={!displayName.trim()}
+                className="w-full md:w-auto px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+              >
+                Create New Room
+              </button>
+              <div className="flex flex-col space-y-2 w-full md:w-auto">
+                <input
+                  type="text"
+                  value={playerInput}
+                  onChange={(e) => setPlayerInput(e.target.value)}
+                  placeholder="Enter Room ID"
+                  className="px-4 py-3 text-lg rounded-lg text-gray-900"
+                />
+                <button
+                  onClick={() => joinRoom()}
+                  disabled={!displayName.trim() || !playerInput.trim()}
+                  className="w-full px-8 py-3 text-lg font-bold bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+                >
+                  Join Room
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+
+      // UI: Lobby
+      const renderGameLobby = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
+          <h1 className="text-4xl font-bold mb-4 text-indigo-400">Game Lobby</h1>
+          <p className="text-xl mb-4 text-center">
+            Share this Room ID with your friends:
+            <span className="font-mono text-2xl bg-gray-800 px-3 py-1 rounded-lg ml-2">{roomId}</span>
+          </p>
+          <p className="text-xl mb-4 text-center">
+            Or use this shareable link:
+            <a href={`${window.location.origin}?room=${roomId}`} className="font-mono text-xl bg-gray-800 px-3 py-1 rounded-lg ml-2 text-blue-400 underline">
+              {`${window.location.origin}?room=${roomId}`}
+            </a>
+          </p>
+          <div className="bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-md">
+            <h2 className="text-2xl font-semibold mb-4 text-center">Players ({players.length})</h2>
+            <ul className="space-y-2">
+              {players.map((p) => (
+                <li key={p.id} className="text-lg bg-gray-700 p-3 rounded-lg flex justify-between items-center">
+                  <span>{p.name}</span>
+                  <span className="font-bold text-green-400">{p.score} pts</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button
+            onClick={startGame}
+            className="mt-8 px-8 py-4 text-xl font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+          >
+            Start Game
+          </button>
+        </div>
+      );
+
+      // UI: Game room
+      const renderGameRoom = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
+          <h1 className="text-4xl font-bold mb-6 text-indigo-400">Riddle Game</h1>
+
+          <div className="w-full max-w-4xl bg-gray-800 p-8 rounded-lg shadow-2xl relative">
+            {/* Wrong-answer popup (local-only) */}
+            {showWrongPopup && (
+              <div
+                className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+                role="dialog" aria-modal="true"
+                onClick={() => setShowWrongPopup(false)}
+              >
+                <div
+                  className="mx-4 w-full max-w-sm rounded-2xl bg-gray-800 p-6 shadow-xl border border-gray-700 text-center"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="text-3xl mb-2">😅</div>
+                  <h3 className="text-lg font-semibold text-white">{wrongPopupText}</h3>
+                  <p className="text-sm text-gray-300 mt-1">Try again before the timer runs out.</p>
+                  <button
+                    className="mt-4 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold"
+                    onClick={() => setShowWrongPopup(false)}
+                  >
+                    Okay
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex flex-col">
+                <span className="text-xl font-semibold">
+                  Current Turn: {gameData.players?.[gameData.turn]?.name}
+                </span>
+                <span className="text-sm text-gray-400">
+                  {gameData.roundStatus === "submitting" ? "Submit Phase" : "Guessing Phase"}
+                </span>
+              </div>
+              <span className="text-4xl font-bold text-red-400">{timer}s</span>
+            </div>
+
+            <div className="bg-gray-700 p-6 rounded-lg text-center mb-6 min-h-[150px] flex items-center justify-center">
+              {gameData.status === "in_progress" && gameData.roundStatus === "guessing" && (
+                <div className="flex flex-col">
+                  <p className="text-2xl font-medium text-yellow-300">{riddle}</p>
+                  {hints.length > 0 && (
+                    <div className="mt-4 text-left">
+                      <h3 className="text-xl font-semibold text-gray-200">Hints:</h3>
+                      <ul className="list-disc list-inside space-y-1 mt-2">
+                        {hints.map((hint, idx) => (
+                          <li key={idx} className="text-lg text-gray-300">{hint}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {gameData.roundStatus === "submitting" && gameData.turn !== user?.uid && (
+                <p className="text-xl text-gray-400">
+                  Waiting for {gameData.players?.[gameData.turn]?.name} to submit an object...
+                </p>
+              )}
+
+              {gameData.roundStatus === "round_over" && (
+                <p className="text-3xl font-bold text-green-400">{gameMessage}</p>
+              )}
+            </div>
+
+            {/* Guess UI (only for non-turn players during guessing) */}
+            {gameData.status === "in_progress" &&
+             gameData.roundStatus === "guessing" &&
+             gameData.turn !== user?.uid && (
+              <div className="flex flex-col items-center space-y-4">
+                <input
+                  type="text"
+                  value={guess}
+                  onChange={(e) => setGuess(e.target.value)}
+                  placeholder="Your guess..."
+                  disabled={(gameData.correctGuessers || []).includes(user?.uid)}
+                  className={
+                    "w-full px-4 py-3 text-lg rounded-lg text-gray-900 " +
+                    (((gameData.correctGuessers || []).includes(user?.uid)) ? "opacity-60 cursor-not-allowed " : "") +
+                    (showWrongPopup ? "ring-2 ring-red-400" : "")
+                  }
+                  onKeyDown={(e) => { if (e.key === "Enter") handleGuess(); }}
+                />
+                <button
+                  onClick={handleGuess}
+                  className="w-full md:w-1/2 px-8 py-4 text-xl font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={(gameData.correctGuessers || []).includes(user?.uid)}
+                >
+                  Guess
+                </button>
+              </div>
+            )}
+
+            {/* Submit UI (only for turn-owner during submitting) */}
+            {gameData.status === "in_progress" &&
+             gameData.roundStatus === "submitting" &&
+             gameData.turn === user?.uid && (
+              <div className="flex flex-col items-center space-y-4">
+                <h2 className="text-2xl font-semibold">Submit an Object</h2>
+                <p className="text-lg text-center text-gray-400">
+                  Your turn! Take a photo, type a word, or describe something. The AI will turn it into a riddle.
+                </p>
+                <input
+                  type="text"
+                  value={playerInput}
+                  onChange={(e) => setPlayerInput(e.target.value)}
+                  placeholder="e.g., 'car'"
+                  className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
+                />
+                <span className="text-gray-400">OR</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImagePick}
+                  className="w-full text-lg text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                />
+                <button
+                  onClick={submitObject}
+                  className="w-full md:w-1/2 px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+                >
+                  Submit
+                </button>
+              </div>
+            )}
+
+            {/* Scoreboard */}
+            <div className="mt-8 bg-gray-700 p-6 rounded-lg">
+              <h2 className="text-2xl font-semibold mb-4 text-center">Scoreboard</h2>
+              <ul className="space-y-2">
+                {players.map((p) => (
+                  <li key={p.id} className="text-lg bg-gray-600 p-3 rounded-lg flex justify-between items-center">
+                    <span>{p.name}</span>
+                    <span className="font-bold text-green-400">{p.score} pts</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      );
+
+      // UI: Game over
+      const renderGameOver = () => (
+        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
+          <h1 className="text-5xl font-bold mb-8 text-green-400">Game Over!</h1>
+          <h2 className="text-3xl font-semibold mb-4">Final Scoreboard</h2>
+          <div className="bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-md">
+            <ul className="space-y-2">
+              {(finalScoreboard || []).map((p) => (
+                <li key={p.id} className="text-lg bg-gray-700 p-3 rounded-lg flex justify-between items-center">
+                  <span>{p.name}</span>
+                  <span className="font-bold text-green-400">{p.score} pts</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-8 px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+          >
+            Play Again
+          </button>
+        </div>
+      );
+
+      if (!isAuthReady) {
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
+            <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-indigo-500"></div>
+            <p className="ml-4 text-2xl">Loading...</p>
+          </div>
+        );
+      }
+
+      switch (page) {
+        case "home": return renderHome();
+        case "game-lobby": return renderGameLobby();
+        case "game-room": return renderGameRoom();
+        case "game-over": return renderGameOver();
+        default: return renderHome();
+      }
+    }
+
+    // Error boundary to avoid "blank screen"
+    class RootErrorBoundary extends React.Component {
+      constructor(props){ super(props); this.state = { hasError:false }; }
+      static getDerivedStateFromError(){ return { hasError:true }; }
+      componentDidCatch(err, info){ console.error('UI crashed:', err, info); }
+      render(){
+        if(this.state.hasError){
+          return (
+            <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-6">
+              <div className="max-w-lg text-center">
+                <h1 className="text-2xl font-bold mb-2">Something went wrong</h1>
+                <p className="text-gray-300 mb-4">Try reloading or going back to the lobby.</p>
+                <button className="px-6 py-3 bg-indigo-600 rounded-lg" onClick={()=>location.reload()}>Reload</button>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    ReactDOM.render(
+      <RootErrorBoundary>
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      </RootErrorBoundary>,
+      document.getElementById("root")
+    );
+  </script>
+</body>
+</html>
