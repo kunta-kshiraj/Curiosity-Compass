@@ -1,634 +1,3 @@
-<!-- <!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Curiosity Compass</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-    import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
-    window.firebase = { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, addDoc, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL };
-  </script>
-    <style>
-        html, body { height: 100%; margin: 0; }
-        body { background:#0f172a; } /* tailwind's gray-900 */
-    </style>
-</head>
-<body class="m-0">
-  <div id="root"></div>
-  <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
-    const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, addDoc, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL } = window.firebase;
-
-    const appId = "default-app-id"; 
-    const firebaseConfig = {
-        apiKey: "AIzaSyDc55OaoUJPtbTchMwFgjw1X1B1chX6NKY",
-        authDomain: "curious-compass.firebaseapp.com",
-        projectId: "curious-compass",
-        storageBucket: "curious-compass.firebasestorage.app",
-        messagingSenderId: "1001869527107",
-        appId: "1:1001869527107:web:9009a531f0c8d196712cf6",
-        measurementId: "G-XDH2974C56"
-    };
-
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-    const auth = getAuth(app);
-
-    const signIn = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (error) {
-        console.error('Firebase authentication error:', error);
-      }
-    };
-
-    const GEMINI_API_KEY = "AIzaSyAOjZmejVF_H510N3-vSLSxCeNGKBvAeKg";
-    const GEMINI_MODEL = 'gemini-1.5-flash';
-    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-
-    const App = () => {
-      const [user, setUser] = useState(null);
-      const [isAuthReady, setIsAuthReady] = useState(false);
-      const [page, setPage] = useState('home');
-      const [roomId, setRoomId] = useState('');
-      const [playerInput, setPlayerInput] = useState('');
-      const [displayName, setDisplayName] = 
-          useState( () => localStorage.getItem('cc_name') || '' );
-      const [players, setPlayers] = useState([]);
-      const [riddle, setRiddle] = useState('');
-      const [timer, setTimer] = useState(0);
-      const [gameMessage, setGameMessage] = useState('Waiting for players...');
-      const [gameData, setGameData] = useState({});
-      const [guess, setGuess] = useState('');
-      const [imageFile, setImageFile] = useState(null);
-      const [hints, setHints] = useState([]);
-      const timerRef = useRef(null);
-      const [finalScoreboard, setFinalScoreboard] = useState(null);
-
-
-      useEffect(() => {
-        onAuthStateChanged(auth, (user) => {
-          setUser(user);
-          setIsAuthReady(true);
-        });
-        signIn();
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const roomFromUrl = urlParams.get('room');
-         if (roomFromUrl) {
-        setPlayerInput(roomFromUrl);
-        // Only auto-join if we already have a saved name
-        if (localStorage.getItem('cc_name')) {
-            joinRoom(roomFromUrl);
-        }
-        }
-      }, []);
-
-      useEffect(() => {
-        if (user && roomId) {
-          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-          const unsubscribe = onSnapshot(roomRef, (snapshot) => {
-            if (snapshot.exists()) {
-              const data = snapshot.data();
-              setGameData(data);
-              const sortedPlayers = Object.values(data.players || {}).sort((a, b) => a.joinIndex - b.joinIndex);
-              setPlayers(sortedPlayers);
-              setRiddle(data.riddle || '');
-              setTimer(data.timer);
-              setGameMessage(data.gameMessage || '');
-              setHints(data.hints || []);
-              if (data.status === 'game_over') {
-                setFinalScoreboard(sortedPlayers);
-                setPage('game-over');
-              } else if(data.status === 'in_progress' && page !== 'game-room') {
-                setPage('game-room');
-              }
-            } else {
-              setPage('home');
-              alert('Room not found or deleted.');
-            }
-          });
-          return () => unsubscribe();
-        }
-      }, [user, roomId]);
-
-      useEffect(() => {
-        if (gameData.status === 'in_progress' && user && gameData.turn === user.uid) {
-            timerRef.current = setInterval(async () => {
-                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-                const snapshot = await getDoc(roomRef);
-                if (snapshot.exists()) {
-                    const currentTimer = snapshot.data().timer;
-                    if (currentTimer > 0) {
-                        await updateDoc(roomRef, {
-                            timer: currentTimer - 1,
-                        });
-                    } else {
-                        clearInterval(timerRef.current);
-                        await handleTurnEnd();
-                    }
-                }
-            }, 1000);
-        } else {
-            clearInterval(timerRef.current);
-        }
-        return () => clearInterval(timerRef.current);
-      }, [gameData.status, gameData.turn]);
-
-  useEffect(() => {
-    if (
-      gameData.status === 'in_progress' &&
-      gameData.roundStatus === 'guessing' &&
-      user &&
-      gameData.turn === user.uid &&           // single source of truth
-      timer > 0
-    ) {
-      if (timer === 35 && (gameData.allHints?.length || 0) > 0 && (gameData.hints?.length || 0) < 1) {
-        addHint(0);
-      }
-      if (timer === 20 && (gameData.allHints?.length || 0) > 1 && (gameData.hints?.length || 0) < 2) {
-        addHint(1);
-      }
-    }
-  }, [timer, gameData.status, gameData.roundStatus, gameData.turn, gameData.allHints, gameData.hints, user]);
-
-      const addHint = async (hintIndex) => {
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const label = `Hint ${hintIndex + 1}: ${gameData.allHints[hintIndex]}`;
-        if ((gameData.hints || []).some(h => h.startsWith(`Hint ${hintIndex + 1}:`))) return;
-        const updatedHints = [...(gameData.hints || []), label];
-        await updateDoc(roomRef, { hints: updatedHints });
-      };
-
-    const handleNameChange = (e) => { const v = e.target.value;
-    setDisplayName(v);
-    localStorage.setItem('cc_name', v); }; 
-
-      const createRoom = async () => {
-        if (!user) return;
-        const newRoomId = Math.random().toString(36).substring(2, 8);
-        const initialPlayers = {
-          [user.uid]: {
-            id: user.uid,
-            name: (displayName || '').trim() || `Player ${Math.floor(Math.random() * 100)}`,
-            score: 0,
-            joinIndex: 0,
-          },
-        };
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', newRoomId);
-        await setDoc(roomRef, {
-          id: newRoomId,
-          players: initialPlayers,
-          status: 'waiting',
-          turn: user.uid,
-          riddle: '',
-          correctAnswer: '',
-          timer: 30,
-          guesses: {},
-          winner: null,
-          gameMessage: `Waiting for players...`,
-          allHints: [],
-          roundNumber: 0,
-          roundStatus: 'submitting',
-        });
-        setRoomId(newRoomId);
-        setPage('game-lobby');
-      };
-
-      const joinRoom = async (inputRoomId = playerInput) => {
-        if (!user || !inputRoomId) return;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', inputRoomId);
-        const roomSnap = await getDoc(roomRef);
-
-        if (roomSnap.exists()) {
-          const roomData = roomSnap.data();
-          if (roomData.status !== 'waiting') {
-            alert('Cannot join, game has already started.');
-            return;
-          }
-          const newPlayer = {
-            id: user.uid,
-            name: (displayName || '').trim() || `Player ${Math.floor(Math.random() * 100)}`,
-            score: 0,
-            joinIndex: Object.keys(roomData.players).length,
-          };
-          await updateDoc(roomRef, {
-            [`players.${user.uid}`]: newPlayer,
-          });
-          setRoomId(inputRoomId);
-          setPage('game-lobby');
-        } else {
-          alert('Room ID not found!');
-        }
-      };
-
-      const startGame = async () => {
-        if (players.length < 2) {
-          alert('Need at least 2 players to start!');
-          return;
-        }
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        await updateDoc(roomRef, {
-          status: 'in_progress',
-          gameMessage: `It is ${gameData.players[gameData.turn].name}'s turn to submit an object!`,
-        });
-        setPage('game-room');
-      };
-
-      const handleTurnEnd = async () => {
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const roomSnap = await getDoc(roomRef);
-        const currentData = roomSnap.data();
-        const sortedPlayers = Object.values(currentData.players).sort((a, b) => a.joinIndex - b.joinIndex);
-        const sortedPlayerIds = sortedPlayers.map(p => p.id);
-        const currentTurnIndex = sortedPlayerIds.indexOf(currentData.turn);
-        const nextTurnIndex = (currentTurnIndex + 1) % sortedPlayerIds.length;
-        const nextPlayerId = sortedPlayerIds[nextTurnIndex];
-
-        if(currentData.roundNumber + 1 > 5) {
-          await updateDoc(roomRef, { status: 'game_over', gameMessage: 'Game Over!' });
-          return;
-        }
-
-        await updateDoc(roomRef, {
-          turn: nextPlayerId,
-          riddle: '',
-          correctAnswer: '',
-          timer: 30,
-          guesses: {},
-          hints: [],
-          allHints: [],
-          correctGuessers: [],  
-          roundNumber: currentData.roundNumber + 1,
-          roundStatus: 'submitting',
-          gameMessage: `Round ${currentData.roundNumber + 1}: It is ${currentData.players[nextPlayerId].name}'s turn to submit an object!`,
-        });
-        setPlayerInput('');
-        setImageFile(null);
-      };
-
-      const submitObject = async () => {
-        if (!user || gameData.turn !== user.uid || (!playerInput && !imageFile)) return;
-        setGameMessage('Processing your submission...');
-        let objectDescription = '';
-        let imageBase64 = '';
-        if (imageFile) {
-            const reader = new FileReader();
-            reader.readAsDataURL(imageFile);
-            reader.onload = async () => {
-                const base64String = reader.result.split(',')[1];
-                imageBase64 = base64String;
-                objectDescription = await identifyObjectFromImage(base64String);
-                if(objectDescription) {
-                    await generateAndPostRiddle(objectDescription);
-                }
-            };
-        } else {
-            objectDescription = playerInput;
-            await generateAndPostRiddle(objectDescription);
-        }
-      };
-
-      const identifyObjectFromImage = async (base64Data) => {
-        const prompt = "Describe the main object in this image in one or two words. For example, 'A red ball', 'A wooden chair', 'A blue cup'.";
-        try {
-            const payload = {
-                contents: [
-                    {
-                        role: 'user',
-                        parts: [
-                            { text: prompt },
-                            { inlineData: { mimeType: 'image/jpeg', data: base64Data } }
-                        ]
-                    }
-                ]
-            };
-            const response = await fetch(API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const result = await response.json();
-            const detectedText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-            return detectedText || '';
-        } catch (error) {
-            console.error('Image analysis error:', error);
-            setGameMessage('Error analyzing image. Please try again.');
-            return '';
-        }
-      };
-
-      const generateAndPostRiddle = async (objectDescription) => {
-        const prompt = `You are a riddle-master for a children's game. The word is "${objectDescription}". Create a short, fun riddle for children that has "${objectDescription}" as the answer. Also, provide three simple hints. Do not include the answer in your response. Respond in a JSON format with 'riddle', 'hints', and 'answer' fields.`;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        try {
-            const payload = {
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            riddle: { type: "STRING" },
-                            hints: { type: "ARRAY", items: { type: "STRING" } },
-                            answer: { type: "STRING" }
-                        },
-                        propertyOrdering: ["riddle", "hints", "answer"]
-                    }
-                }
-            };
-            const response = await fetch(API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const result = await response.json();
-            const jsonString = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-            const parsedJson = JSON.parse(jsonString);
-            if (parsedJson && parsedJson.riddle && parsedJson.answer) {
-                await updateDoc(roomRef, {
-                    riddle: parsedJson.riddle,
-                    correctAnswer: parsedJson.answer.toLowerCase(),
-                    allHints: parsedJson.hints || [],
-                    hints:[],
-                    timer: 70,
-                    gameMessage: `A new riddle has been generated! Guess what it is!`,
-                    roundStatus: 'guessing',
-                });
-            } else {
-                setGameMessage('Could not generate a riddle. Please try again.');
-            }
-        } catch (error) {
-            console.error('Riddle generation error:', error);
-            setGameMessage('Error generating riddle. Please try again.');
-        }
-      };
-
-      const handleGuess = async () => {
-        if (!user || !guess) return;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const roomSnap = await getDoc(roomRef);
-        const currentData = roomSnap.data();
-        const newGuesses = { ...currentData.guesses, [user.uid]: guess };
-        
-        if (guess.toLowerCase().includes(currentData.correctAnswer.toLowerCase())) {
-            const score = 100 - Math.max(0, 70 - currentData.timer);
-            const updatedPlayers = { ...currentData.players };
-            updatedPlayers[user.uid].score += score;
-            await updateDoc(roomRef, {
-                [`players.${user.uid}.score`]: updatedPlayers[user.uid].score,
-                gameMessage: `${updatedPlayers[user.uid].name} guessed correctly! The answer was: ${currentData.correctAnswer}`,
-                roundStatus: 'round_over',
-                guesses: newGuesses,
-            });
-            setTimeout(handleTurnEnd, 5000);
-        } else {
-            await updateDoc(roomRef, {
-                gameMessage: `${currentData.players[user.uid].name} guessed "${guess}". That's not it!`,
-                guesses: newGuesses,
-            });
-        }
-        setGuess('');
-      };
-
-      const renderHome = () => (
-        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 min-h-screen font-sans">
-          <h1 className="text-5xl font-bold mb-8 text-indigo-400 animate-pulse">Curiosity Compass</h1>
-          <p className="text-xl mb-8 text-center text-gray-300">
-            The ultimate riddle-solving game. Take turns creating riddles from objects for your friends to guess.
-          </p>
-         <div className="w-full max-w-xl space-y-4">
-            <input
-                type="text"
-                value={displayName}
-                onChange={handleNameChange}
-                placeholder="Your name (e.g., John)"
-                className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
-            />
-            <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
-            <button
-              onClick={createRoom}
-              disabled={!displayName.trim()}
-              className="w-full md:w-auto px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
-            >
-              Create New Room
-            </button>
-            <div className="flex flex-col space-y-2">
-              <input
-                type="text"
-                value={playerInput}
-                onChange={(e) => setPlayerInput(e.target.value)}
-                placeholder="Enter Room ID"
-                className="px-4 py-3 text-lg rounded-lg text-gray-900"
-              />
-              <button
-                onClick={() => joinRoom()}
-                disabled={!displayName.trim() || !playerInput.trim()}
-                className="w-full px-8 py-3 text-lg font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
-              >
-                Join Room
-              </button>
-            </div>
-            </div>
-          </div>
-        </div>
-      );
-
-      const renderGameLobby = () => (
-        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
-          <h1 className="text-4xl font-bold mb-4 text-indigo-400">Game Lobby</h1>
-          <p className="text-xl mb-4 text-center">
-            Share this Room ID with your friends:
-            <span className="font-mono text-2xl bg-gray-800 px-3 py-1 rounded-lg ml-2">{roomId}</span>
-          </p>
-          <p className="text-xl mb-4 text-center">
-            Or use this shareable link:
-            <a href={`${window.location.origin}?room=${roomId}`} className="font-mono text-xl bg-gray-800 px-3 py-1 rounded-lg ml-2 text-blue-400 underline">
-              {`${window.location.origin}?room=${roomId}`}
-            </a>
-          </p>
-          <div className="bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-md">
-            <h2 className="text-2xl font-semibold mb-4 text-center">Players ({players.length})</h2>
-            <ul className="space-y-2">
-              {players.map((player) => (
-                <li key={player.id} className="text-lg bg-gray-700 p-3 rounded-lg flex justify-between items-center">
-                  <span>{player.name}</span>
-                  <span className="font-bold text-green-400">{player.score} pts</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <button
-            onClick={startGame}
-            className="mt-8 px-8 py-4 text-xl font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
-          >
-            Start Game
-          </button>
-        </div>
-      );
-
-      const renderGameRoom = () => (
-        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
-          <h1 className="text-4xl font-bold mb-6 text-indigo-400">Riddle Game</h1>
-          <div className="w-full max-w-4xl bg-gray-800 p-8 rounded-lg shadow-2xl">
-            <div className="flex justify-between items-center mb-6">
-              <span className="text-xl font-semibold">Current Turn: {gameData.players?.[gameData.turn]?.name}</span>
-              <span className="text-4xl font-bold text-red-400">{timer}s</span>
-            </div>
-
-            <div className="bg-gray-700 p-6 rounded-lg text-center mb-6 min-h-[150px] flex items-center justify-center">
-              {gameData.status === 'in_progress' && gameData.roundStatus === 'guessing' && (
-                <div className="flex flex-col">
-                  <p className="text-2xl font-medium text-yellow-300 animate-fade-in">{riddle}</p>
-                  {hints.length > 0 && (
-                    <div className="mt-4 text-left">
-                      <h3 className="text-xl font-semibold text-gray-200">Hints:</h3>
-                      <ul className="list-disc list-inside space-y-1 mt-2">
-                        {hints.map((hint, index) => (
-                          <li key={index} className="text-lg text-gray-300">{hint}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-              {gameData.roundStatus === 'submitting' && gameData.turn !== user.uid && (
-                  <p className="text-xl text-gray-400">Waiting for {gameData.players?.[gameData.turn]?.name} to submit an object...</p>
-              )}
-              {gameData.roundStatus === 'round_over' && (
-                  <p className="text-3xl font-bold text-green-400 animate-pulse">{gameMessage}</p>
-              )}
-            </div>
-
-            {gameData.status === 'in_progress' && gameData.roundStatus === 'guessing' && gameData.turn !== user.uid && (
-              <div className="flex flex-col items-center space-y-4">
-                <input
-                  type="text"
-                  value={guess}
-                  onChange={(e) => setGuess(e.target.value)}
-                  placeholder="Your guess..."
-                  className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter') handleGuess();
-                  }}
-                />
-                <button
-                  onClick={handleGuess}
-                  className="w-full md:w-1/2 px-8 py-4 text-xl font-bold bg-green-600 hover:bg-green-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
-                >
-                  Guess
-                </button>
-              </div>
-            )}
-
-            {gameData.status === 'in_progress' && gameData.roundStatus === 'submitting' && gameData.turn === user.uid && (
-              <div className="flex flex-col items-center space-y-4">
-                <h2 className="text-2xl font-semibold">Submit an Object</h2>
-                <p className="text-lg text-center text-gray-400">
-                  Your turn! Take a photo, type a word, or describe something. The AI will turn it into a riddle.
-                </p>
-                <input
-                  type="text"
-                  value={playerInput}
-                  onChange={(e) => setPlayerInput(e.target.value)}
-                  placeholder="e.g., 'A tennis racket'"
-                  className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
-                />
-                <span className="text-gray-400">OR</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setImageFile(e.target.files[0])}
-                  className="w-full text-lg text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-                />
-                <button
-                  onClick={submitObject}
-                  className="w-full md:w-1/2 px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
-                >
-                  Submit
-                </button>
-              </div>
-            )}
-
-            <div className="mt-8 bg-gray-700 p-6 rounded-lg">
-              <h2 className="text-2xl font-semibold mb-4 text-center">Scoreboard</h2>
-              <ul className="space-y-2">
-                {players.map((player) => (
-                  <li key={player.id} className="text-lg bg-gray-600 p-3 rounded-lg flex justify-between items-center">
-                    <span>{player.name}</span>
-                    <span className="font-bold text-green-400">{player.score} pts</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </div>
-      );
-
-      const renderGameOver = () => (
-        <div className="flex flex-col items-center justify-center p-8 bg-gray-900 text-white min-h-screen font-sans">
-          <h1 className="text-5xl font-bold mb-8 text-green-400">Game Over!</h1>
-          <h2 className="text-3xl font-semibold mb-4">Final Scoreboard</h2>
-          <div className="bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-md">
-            <ul className="space-y-2">
-              {finalScoreboard.map((player) => (
-                <li key={player.id} className="text-lg bg-gray-700 p-3 rounded-lg flex justify-between items-center">
-                  <span>{player.name}</span>
-                  <span className="font-bold text-green-400">{player.score} pts</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-8 px-8 py-4 text-xl font-bold bg-indigo-600 hover:bg-indigo-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
-          >
-            Play Again
-          </button>
-        </div>
-      );
-
-      if (!isAuthReady) {
-        return (
-          <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-            <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-indigo-500"></div>
-            <p className="ml-4 text-2xl">Loading...</p>
-          </div>
-        );
-      }
-
-      switch (page) {
-        case 'home':
-          return renderHome();
-        case 'game-lobby':
-          return renderGameLobby();
-        case 'game-room':
-          return renderGameRoom();
-        case 'game-over':
-          return renderGameOver();
-        default:
-          return renderHome();
-      }
-    };
-
-    ReactDOM.render(
-      <React.StrictMode>
-        <App />
-      </React.StrictMode>,
-      document.getElementById('root')
-    );
-  </script>
-</body>
-</html> -->
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -644,9 +13,10 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, collection, getDocs, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
     import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
-    window.firebase = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL };
+    import { addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    window.firebase = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, getStorage, ref, uploadBytesResumable, getDownloadURL, collection, getDocs, query, orderBy, limit };
   </script>
 
   <!-- Remove default body margin; dark background -->
@@ -663,7 +33,7 @@
     const { useState, useEffect, useRef } = React;
     const {
       initializeApp, getAuth, signInAnonymously, onAuthStateChanged,
-      getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc
+      getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, collection, getDocs, query, orderBy, limit
     } = window.firebase;
 
     // ---- Timing constants (single source of truth) ----
@@ -674,6 +44,30 @@
     const WRONG_POPUP_MS = 2500;   // wrong-answer popup duration
 
     // App + Firebase
+    // const appId = "default-app-id";
+    // const firebaseConfig = {
+    //   apiKey: "AIzaSyASPPeegVkH-LluYNZVTYyW_h_iQ-QTJ90",
+    //   authDomain: "curious-compass.firebaseapp.com",
+    //   projectId: "curious-compass",
+    //   storageBucket: "curious-compass.firebasestorage.app",
+    //   messagingSenderId: "1001869527107",
+    //   appId: "1:1001869527107:web:9009a531f0c8d196712cf6",
+    //   measurementId: "G-XDH2974C56"
+    // };
+    // const app = initializeApp(firebaseConfig);
+    // const db = getFirestore(app);
+    // const auth = getAuth(app);
+
+    // const signIn = async () => {
+    //   try { await signInAnonymously(auth); }
+    //   catch (e) { console.error("Firebase auth error:", e); }
+    // };
+
+    // // Gemini
+    // const GEMINI_API_KEY = "AIzaSyAOjZmejVF_H510N3-vSLSxCeNGKBvAeKg";
+    // const GEMINI_MODEL = "models/gemini-2.5-flash";
+    // const API_URL = `https://generativelanguage.googleapis.com/v1/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
     const appId = "default-app-id";
     const firebaseConfig = {
       apiKey: "AIzaSyDc55OaoUJPtbTchMwFgjw1X1B1chX6NKY",
@@ -693,10 +87,11 @@
       catch (e) { console.error("Firebase auth error:", e); }
     };
 
-    // Gemini
+    // ✅ Gemini config (use the NEW key only here)
+    // const GEMINI_API_KEY = "AlzaSyASPPeegVkH-LluYNZVTYyW_h_iQ-QTJ90";
     const GEMINI_API_KEY = "AIzaSyAOjZmejVF_H510N3-vSLSxCeNGKBvAeKg";
-    const GEMINI_MODEL = "gemini-1.5-flash";
-    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const GEMINI_MODEL = "models/gemini-2.5-flash";
+    const API_URL = `https://generativelanguage.googleapis.com/v1/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
     function App() {
       // Core state
@@ -708,6 +103,7 @@
       const [playerInput, setPlayerInput] = useState("");
 
       const [displayName, setDisplayName] = useState(() => localStorage.getItem("cc_name") || "");
+      const [numberOfRounds, setNumberOfRounds] = useState(() => parseInt(localStorage.getItem("cc_rounds")) || 3);
 
       const [players, setPlayers] = useState([]);
       const [riddle, setRiddle] = useState("");
@@ -722,9 +118,32 @@
       // Wrong-answer popup (local-only)
       const [showWrongPopup, setShowWrongPopup] = useState(false);
       const [wrongPopupText, setWrongPopupText] = useState("Wrong answer!");
-
+      const [isLoadingRiddle, setIsLoadingRiddle] = useState(false);
+      const [session, setSession] = useState(null);
       // Turn timer driver (only on the turn-owner client)
       const timerRef = useRef(null);
+      
+      // Leaderboard state
+      const [leaderboard, setLeaderboard] = useState([]);
+      const [showLeaderboard, setShowLeaderboard] = useState(false);
+      
+      // Recent matches state
+      const [recentMatches, setRecentMatches] = useState([]);
+      const [showRecentMatches, setShowRecentMatches] = useState(false);
+
+
+      useEffect(() => {
+        if (page === "parent") {
+          const q = query(collection(db, "sessions"), orderBy("timestamp", "desc"), limit(1));
+          const unsub = onSnapshot(q, (snap) => {
+            if (!snap.empty) {
+              setSession(snap.docs[0].data());
+            }
+          });
+          return () => unsub();
+        }
+      }, [page]);
+
 
       // Auth + deep-link auto-join (only if name is already saved)
       useEffect(() => {
@@ -742,7 +161,19 @@
             joinRoom(roomFromUrl);
           }
         }
-      }, []);
+        
+        // Load recent matches on home page
+        if (page === "home" && user) {
+          loadRecentMatches();
+        }
+      }, [page]);
+
+      // Load recent matches when user changes
+      useEffect(() => {
+        if (user && page === "home") {
+          loadRecentMatches();
+        }
+      }, [user, page]);
 
       // Subscribe to current room
       useEffect(() => {
@@ -859,7 +290,12 @@
           hints: [],
           correctGuessers: [],
           roundNumber: 0,
+          roundTurns: 0,
           roundStatus: "submitting",
+          createdAt: new Date().toISOString(),
+          submittedObjects: {},
+          totalRounds: numberOfRounds,
+          allWords: {} // Store all words from all rounds
         });
         setRoomId(newRoomId);
         setPage("game-lobby");
@@ -912,51 +348,206 @@
         const sortedPlayers = Object.values(currentData.players).sort((a,b)=>a.joinIndex - b.joinIndex);
         const sortedIds = sortedPlayers.map(p => p.id);
         const currentIdx = sortedIds.indexOf(currentData.turn);
-        const nextIdx = (currentIdx + 1) % sortedIds.length;
-        const nextPlayerId = sortedIds[nextIdx];
-
-        if (currentData.roundNumber + 1 > 5) {
-          await updateDoc(roomRef, { status: "game_over", gameMessage: "Game Over!" });
-          return;
+        
+        // Check if we've completed both players' turns in this round
+        const currentRound = currentData.roundNumber || 1;
+        const roundTurns = currentData.roundTurns || 0; // Track turns within current round
+        
+        if (roundTurns < 1) {
+          // First turn of the round - next player submits
+          const nextIdx = (currentIdx + 1) % sortedIds.length;
+          const nextPlayerId = sortedIds[nextIdx];
+          
+          await updateDoc(roomRef, {
+            turn: nextPlayerId,
+            riddle: "",
+            correctAnswer: "",
+            timer: SUBMIT_SECONDS,
+            guesses: {},
+            hints: [],
+            allHints: [],
+            correctGuessers: [],
+            roundTurns: roundTurns + 1,
+            roundStatus: "submitting",
+            gameMessage: `Round ${currentRound}: It is ${currentData.players[nextPlayerId].name}'s turn to submit an object!`,
+          });
+        } else {
+          // Both players have had their turn in this round - move to next round
+          if (currentRound + 1 > (currentData.totalRounds || 5)) {
+            await logSession({
+              childName: gameData.players?.[user?.uid]?.name || "Player",
+              roomId,
+              objects: [currentData.riddle || "unknown"],
+              skills: ["creativity", "observation", "persistence"],
+              recap: `${gameData.players?.[user?.uid]?.name || "Player"} played ${currentRound} rounds and practiced persistence.`
+            });
+            await updateDoc(roomRef, { status: "game_over", gameMessage: "Game Over!" });
+            return;
+          }
+          
+          // Start next round with first player
+          const firstPlayerId = sortedIds[0];
+          await updateDoc(roomRef, {
+            turn: firstPlayerId,
+            riddle: "",
+            correctAnswer: "",
+            timer: SUBMIT_SECONDS,
+            guesses: {},
+            hints: [],
+            allHints: [],
+            correctGuessers: [],
+            roundNumber: currentRound + 1,
+            roundTurns: 0,
+            roundStatus: "submitting",
+            gameMessage: `Round ${currentRound + 1}: It is ${currentData.players[firstPlayerId].name}'s turn to submit an object!`,
+          });
         }
-
-        await updateDoc(roomRef, {
-          turn: nextPlayerId,
-          riddle: "",
-          correctAnswer: "",
-          timer: SUBMIT_SECONDS,   // next submit phase
-          guesses: {},
-          hints: [],
-          allHints: [],
-          correctGuessers: [],
-          roundNumber: currentData.roundNumber + 1,
-          roundStatus: "submitting",
-          gameMessage: `Round ${currentData.roundNumber + 1}: It is ${currentData.players[nextPlayerId].name}'s turn to submit an object!`,
-        });
+        
         setPlayerInput("");
         setImageFile(null);
       };
 
-      // Submit an object (word or image)
-      const submitObject = async () => {
-        if (!user || gameData.turn !== user.uid || (!playerInput && !imageFile)) return;
-        setGameMessage("Processing your submission...");
+  // Submit an object (word or image)
+  const submitObject = async () => {
+  if (!user || gameData.turn !== user.uid || (!playerInput && !imageFile)) return;
 
-        let objectDescription = "";
-        if (imageFile) {
-          const reader = new FileReader();
-          reader.readAsDataURL(imageFile);
-          reader.onload = async () => {
-            const base64String = reader.result.split(",")[1];
-            objectDescription = await identifyObjectFromImage(base64String);
-            if (objectDescription) await generateAndPostRiddle(objectDescription);
-          };
-        } else {
-          objectDescription = playerInput;
-          await generateAndPostRiddle(objectDescription);
+  const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
+
+  // Start loading
+  setIsLoadingRiddle(true);
+
+  await updateDoc(roomRef, {
+    roundStatus: "generating",
+    gameMessage: `${gameData.players[user.uid].name} is submitting… please wait`
+  });
+
+  let objectDescription = "";
+  if (imageFile) {
+    const reader = new FileReader();
+    reader.readAsDataURL(imageFile);
+    reader.onload = async () => {
+      const base64String = reader.result.split(",")[1];
+      objectDescription = await identifyObjectFromImage(base64String);
+      if (objectDescription) {
+        // Store the submitted object for tracking
+        await updateDoc(roomRef, {
+          [`submittedObjects.${user.uid}`]: objectDescription
+        });
+        await generateAndPostRiddle(objectDescription);
+      }
+    };
+  } else {
+    objectDescription = playerInput;
+    // Store the submitted object for tracking
+    await updateDoc(roomRef, {
+      [`submittedObjects.${user.uid}`]: objectDescription
+    });
+    await generateAndPostRiddle(objectDescription);
+  }
+};
+
+
+const logSession = async (summary) => {
+        try {
+          const sessionRef = collection(db, "sessions");
+          await addDoc(sessionRef, {
+            ...summary,
+            timestamp: serverTimestamp()
+          });
+          console.log("✅ Session log saved");
+        } catch (e) {
+          console.error("Error saving session log:", e);
         }
       };
 
+      // Store words for each round in a separate collection
+      const storeWordsForRound = async (roomId, roundNumber, wordsData, playerId, playerName) => {
+        try {
+          const wordsRef = doc(db, "artifacts", appId, "public", "data", "words", `${roomId}_round_${roundNumber}`);
+          const wordsSnap = await getDoc(wordsRef);
+          
+          if (wordsSnap.exists()) {
+            // Update existing round data
+            const existingData = wordsSnap.data();
+            const submissions = existingData.submissions || {};
+            
+            submissions[playerId] = {
+              submittedObject: wordsData.submittedObject,
+              riddle: wordsData.riddle,
+              correctAnswer: wordsData.correctAnswer,
+              hints: wordsData.hints,
+              playerName: playerName,
+              timestamp: new Date().toISOString()
+            };
+            
+            await updateDoc(wordsRef, {
+              submissions: submissions
+            });
+          } else {
+            // Create new round data
+            await setDoc(wordsRef, {
+              roomId: roomId,
+              roundNumber: roundNumber,
+              submissions: {
+                [playerId]: {
+                  submittedObject: wordsData.submittedObject,
+                  riddle: wordsData.riddle,
+                  correctAnswer: wordsData.correctAnswer,
+                  hints: wordsData.hints,
+                  playerName: playerName,
+                  timestamp: new Date().toISOString()
+                }
+              },
+              guesses: {},
+              timestamp: new Date().toISOString()
+            });
+          }
+          
+          console.log(`✅ Words stored for room ${roomId}, round ${roundNumber}, player ${playerName}:`, {
+            object: wordsData.submittedObject,
+            answer: wordsData.correctAnswer,
+            hints: wordsData.hints?.length || 0
+          });
+          console.log(`📝 AllWords field updated for round ${roundNumber}:`, {
+            player: playerName,
+            object: wordsData.submittedObject
+          });
+        } catch (e) {
+          console.error("Error storing words:", e);
+        }
+      };
+
+      // Store a guess in the words collection
+      const storeGuess = async (roomId, roundNumber, playerId, playerName, guess) => {
+        try {
+          const wordsRef = doc(db, "artifacts", appId, "public", "data", "words", `${roomId}_round_${roundNumber}`);
+          const wordsSnap = await getDoc(wordsRef);
+          
+          if (wordsSnap.exists()) {
+            const currentData = wordsSnap.data();
+            const updatedGuesses = {
+              ...currentData.guesses,
+              [playerId]: {
+                guess: guess,
+                playerName: playerName,
+                timestamp: new Date().toISOString()
+              }
+            };
+            
+            await updateDoc(wordsRef, {
+              guesses: updatedGuesses
+            });
+            console.log(`✅ Guess stored for room ${roomId}, round ${roundNumber}:`, {
+              player: playerName,
+              guess: guess,
+              totalGuesses: Object.keys(updatedGuesses).length
+            });
+          }
+        } catch (e) {
+          console.error("Error storing guess:", e);
+        }
+      };
+      
       // Vision helper
       const identifyObjectFromImage = async (base64Data, mimeType = "image/jpeg") => {
         const prompt = "Describe the main object in this image in one or two words. For example, 'A red ball', 'A wooden chair', 'A blue cup'.";
@@ -1015,64 +606,97 @@
 };
 
 
+const generateAndPostRiddle = async (objectDescription) => {
+  const prompt = `You are a riddle-master for a children's game. 
+  The word is "${objectDescription}". 
+  Create a short, fun riddle for children that has "${objectDescription}" as the answer. 
+  Also, provide three simple hints. Do not include the answer in your response. 
+  Respond in JSON format with fields: riddle, hints, answer.`;
 
-      // Generate riddle and start guessing phase
-      const generateAndPostRiddle = async (objectDescription) => {
-        const prompt = `You are a riddle-master for a children's game. The word is "${objectDescription}". Create a short, fun riddle for children that has "${objectDescription}" as the answer. Also, provide three simple hints. Do not include the answer in your response. Respond in a JSON format with 'riddle', 'hints', and 'answer' fields.`;
-        const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
-        try {
-          const payload = {
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: "OBJECT",
-                properties: {
-                  riddle: { type: "STRING" },
-                  hints: { type: "ARRAY", items: { type: "STRING" } },
-                  answer: { type: "STRING" }
-                },
-                propertyOrdering: ["riddle", "hints", "answer"]
-              }
-            }
-          };
-          const res = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-          const result = await res.json();
+  const roomRef = doc(db, "artifacts", appId, "public", "data", "rooms", roomId);
 
-          // Robust parse
-          const raw = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-          let parsed = null;
-          try { parsed = JSON.parse(raw); }
-          catch {
-            const m = raw.match(/\{[\s\S]*\}/);
-            if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
-          }
+  try {
+    const payload = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }]
+    };
 
-          if (parsed && parsed.riddle && parsed.answer) {
-            await updateDoc(roomRef, {
-              riddle: parsed.riddle,
-              correctAnswer: (parsed.answer || "").toLowerCase(),
-              allHints: parsed.hints || [],
-              hints: [],
-              correctGuessers: [],
-              timer: GUESS_SECONDS, // guessing phase 70s
-              gameMessage: "A new riddle has been generated! Guess what it is!",
-              roundStatus: "guessing",
-            });
-          } else {
-            await updateDoc(roomRef, {
-              roundStatus: "submitting",
-              gameMessage: "Could not generate a riddle. Please try again with a simpler word."
-            });
-          }
-        } catch (e) {
-          console.error("Riddle generation error:", e);
-          await updateDoc(roomRef, {
-            roundStatus: "submitting",
-            gameMessage: "Error generating riddle. Please try again."
-          });
-        }
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await res.json();
+
+    const raw = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
+    }
+
+    if (parsed && parsed.riddle && parsed.answer) {
+      const currentRound = gameData.roundNumber || 1;
+      
+      // Store all words from this round in the words collection
+      await storeWordsForRound(roomId, currentRound, {
+        submittedObject: objectDescription,
+        riddle: parsed.riddle,
+        correctAnswer: parsed.answer.toLowerCase(),
+        hints: parsed.hints || []
+      }, user.uid, gameData.players[user.uid].name);
+
+      // Also store words in the room's allWords field for easy access
+      const currentWords = gameData.allWords || {};
+      const roundKey = `round${currentRound}`;
+      const existingRoundWords = currentWords[roundKey] || {};
+      
+      // Store this player's submission in the round
+      const playerSubmission = {
+        submittedObject: objectDescription,
+        riddle: parsed.riddle,
+        correctAnswer: parsed.answer.toLowerCase(),
+        hints: parsed.hints || [],
+        playerName: gameData.players[user.uid].name,
+        timestamp: new Date().toISOString()
       };
+      
+      // Update the round with this player's submission
+      const updatedRoundWords = {
+        ...existingRoundWords,
+        [`player${user.uid}`]: playerSubmission
+      };
+      
+      await updateDoc(roomRef, {
+        riddle: parsed.riddle,
+        correctAnswer: (parsed.answer || "").toLowerCase(),
+        allHints: parsed.hints || [],
+        hints: [],
+        correctGuessers: [],
+        timer: GUESS_SECONDS,
+        gameMessage: "A new riddle has been generated! Guess what it is!",
+        roundStatus: "guessing",
+        [`allWords.${roundKey}`]: updatedRoundWords
+      });
+      setIsLoadingRiddle(false); 
+    } else {
+      await updateDoc(roomRef, {
+        roundStatus: "submitting",
+        gameMessage: "Could not generate a riddle. Please try again with a simpler word."
+      });
+      setIsLoadingRiddle(false); 
+    }
+  } catch (e) {
+    setIsLoadingRiddle(false);
+    console.error("Riddle generation error:", e);
+    await updateDoc(roomRef, {
+      roundStatus: "submitting",
+      gameMessage: "Error generating riddle. Please try again."
+    });
+  }
+};
 
       // Handle guess: all non-turn players must solve OR timer hits 0
       const handleGuess = async () => {
@@ -1095,10 +719,25 @@
 
   const newGuesses = { ...(data.guesses || {}), [user.uid]: guess };
   const alreadyCorrect = (data.correctGuessers || []).includes(user.uid);
+  
+  // Store the guess in the words collection
+  await storeGuess(roomId, data.roundNumber || 1, user.uid, data.players[user.uid].name, guess);
+  
+  // Also store guess in the room's allWords field
+  const currentRound = data.roundNumber || 1;
+  const roundWords = data.allWords?.[`round${currentRound}`] || {};
+  const roundGuesses = roundWords.guesses || {};
+  roundGuesses[user.uid] = {
+    guess: guess,
+    playerName: data.players[user.uid].name,
+    timestamp: new Date().toISOString()
+  };
+  
   if (alreadyCorrect) {
     await updateDoc(roomRef, {
       guesses: newGuesses,
-      gameMessage: `${data.players[user.uid].name} already solved it.`
+      gameMessage: `${data.players[user.uid].name} already solved it.`,
+      [`allWords.round${currentRound}.guesses`]: roundGuesses
     });
     setGuess("");
     return;
@@ -1117,6 +756,7 @@
     await updateDoc(roomRef, {
       guesses: newGuesses,
       gameMessage: `${data.players[user.uid].name} guessed "${guess}". ❌ Wrong answer!`,
+      [`allWords.round${currentRound}.guesses`]: roundGuesses
     });
     setGuess("");
     return;
@@ -1142,18 +782,404 @@
       ...baseUpdate,
       roundStatus: "round_over",
       gameMessage: `${updatedPlayers[user.uid].name} solved it — and everyone else did too! Answer: ${data.correctAnswer}`,
+      [`allWords.round${currentRound}.guesses`]: roundGuesses
     });
     setTimeout(handleTurnEnd, 5000);
   } else {
     await updateDoc(roomRef, {
       ...baseUpdate,
       gameMessage: `${updatedPlayers[user.uid].name} guessed correctly! ✅ Waiting for others...`,
+      [`allWords.round${currentRound}.guesses`]: roundGuesses
     });
   }
 
   setGuess("");
 };
 
+      // Leaderboard functions
+      const loadLeaderboard = async () => {
+        try {
+          // Get all players from all rooms and aggregate their scores
+          const roomsRef = collection(db, "artifacts", appId, "public", "data", "rooms");
+          const roomsSnapshot = await getDocs(roomsRef);
+          
+          const playerScores = {};
+          
+          roomsSnapshot.forEach((roomDoc) => {
+            const roomData = roomDoc.data();
+            if (roomData.players) {
+              Object.values(roomData.players).forEach(player => {
+                if (playerScores[player.name]) {
+                  playerScores[player.name] += player.score || 0;
+                } else {
+                  playerScores[player.name] = player.score || 0;
+                }
+              });
+            }
+          });
+          
+          // Convert to array and sort by score
+          const leaderboardData = Object.entries(playerScores)
+            .map(([name, score]) => ({ name, score }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10); // Top 10 players
+          
+          setLeaderboard(leaderboardData);
+        } catch (error) {
+          console.error("Error loading leaderboard:", error);
+        }
+      };
+
+      const toggleLeaderboard = () => {
+        if (!showLeaderboard) {
+          loadLeaderboard();
+        }
+        setShowLeaderboard(!showLeaderboard);
+      };
+
+      // Recent matches functions - get last 3 matches for current player
+      const loadRecentMatches = async () => {
+        try {
+          // Get all rooms and sort by creation time (most recent first)
+          const roomsRef = collection(db, "artifacts", appId, "public", "data", "rooms");
+          const roomsSnapshot = await getDocs(roomsRef);
+          
+          const allRooms = [];
+          roomsSnapshot.forEach((roomDoc) => {
+            const roomData = roomDoc.data();
+            if (roomData.players && Object.keys(roomData.players).length > 0) {
+              allRooms.push({
+                id: roomDoc.id,
+                ...roomData,
+                createdAt: roomData.createdAt || new Date().toISOString()
+              });
+            }
+          });
+          
+          // Filter rooms where current player participated first, then sort and take last 3
+          const playerRooms = allRooms
+            .filter(room => 
+              Object.values(room.players).some(player => player.id === (user && user.uid))
+            )
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+            .slice(0, 3);
+          
+          // Extract comprehensive word data from each room - now from ALL rounds
+          const matchesData = await Promise.all(playerRooms.map(async (room, index) => {
+            const players = Object.values(room.players || {});
+            const allWords = [];
+            
+            // Get words from ALL rounds of this game
+            const totalRounds = room.roundNumber || 1;
+            let hasWordsFromNewCollection = false;
+            
+            // First, try to get words from the new words collection
+            for (let roundNum = 1; roundNum <= totalRounds; roundNum++) {
+              try {
+                const wordsRef = doc(db, "artifacts", appId, "public", "data", "words", `${room.id}_round_${roundNum}`);
+                const wordsSnap = await getDoc(wordsRef);
+                
+                if (wordsSnap.exists()) {
+                  hasWordsFromNewCollection = true;
+                  const roundData = wordsSnap.data();
+                  
+                  // Process submissions from all players in this round - ONLY SUBMITTED OBJECTS
+                  if (roundData.submissions) {
+                    Object.entries(roundData.submissions).forEach(([playerId, submissionData]) => {
+                      // Only show submitted objects (what players actually entered)
+                      if (submissionData.submittedObject) {
+                        allWords.push({
+                          word: submissionData.submittedObject,
+                          player: submissionData.playerName,
+                          type: 'object',
+                          round: roundNum
+                        });
+                      }
+                    });
+                  }
+                }
+              } catch (error) {
+                console.error(`Error loading words for round ${roundNum}:`, error);
+              }
+            }
+            
+            // If no words found in new collection, try the allWords field
+            if (!hasWordsFromNewCollection && allWords.length === 0) {
+              console.log(`No words collection found for room ${room.id}, checking allWords field`);
+              
+              // Check if room has allWords field with data from all rounds
+              if (room.allWords) {
+                console.log(`🔍 Processing allWords field for room ${room.id}:`, room.allWords);
+                Object.entries(room.allWords).forEach(([roundKey, roundData]) => {
+                  const roundNum = parseInt(roundKey.replace('round', ''));
+                  console.log(`📋 Processing round ${roundNum}:`, roundData);
+                  
+                  // Extract ALL player submissions from this round
+                  Object.entries(roundData).forEach(([playerKey, playerData]) => {
+                    if (playerKey.startsWith('player') && playerData.submittedObject) {
+                      console.log(`✅ Found submission: ${playerData.submittedObject} by ${playerData.playerName}`);
+                      allWords.push({
+                        word: playerData.submittedObject,
+                        player: playerData.playerName || 'Player',
+                        type: 'object',
+                        round: roundNum
+                      });
+                    }
+                  });
+                });
+              }
+              
+              // Final fallback: Get words from the original room data (for very old games)
+              if (allWords.length === 0) {
+                console.log(`No allWords field found, using final fallback for room ${room.id}`);
+                
+                if (room.submittedObjects) {
+                  Object.entries(room.submittedObjects).forEach(([playerId, object]) => {
+                    const player = players.find(p => p.id === playerId);
+                    if (player && object && object.trim()) {
+                      allWords.push({
+                        word: object.trim(),
+                        player: player.name,
+                        type: 'object',
+                        round: room.roundNumber || 1
+                      });
+                    }
+                  });
+                }
+              }
+            }
+            
+            // Remove duplicate words (same word by same player in same round with same type)
+            const uniqueWords = [];
+            const seenWords = new Set();
+            allWords.forEach(wordData => {
+              const key = `${wordData.word.toLowerCase()}-${wordData.player}-${wordData.round}-${wordData.type}`;
+              if (!seenWords.has(key)) {
+                seenWords.add(key);
+                uniqueWords.push(wordData);
+              }
+            });
+            
+            // Sort words by round first
+            const sortedWords = uniqueWords.sort((a, b) => {
+              return a.round - b.round; // Sort by round number
+            });
+            
+            return {
+              matchNumber: index + 1,
+              roomId: room.id,
+              players: players.map(p => p.name),
+              words: sortedWords,
+              createdAt: room.createdAt,
+              totalRounds: totalRounds,
+              gameStatus: room.status || 'unknown'
+            };
+          }));
+          
+          console.log("Recent matches data with all rounds:", matchesData);
+          console.log("Player rooms found:", playerRooms.length);
+          console.log("Current user ID:", user && user.uid);
+          
+          // Debug: Log each match's word count
+          matchesData.forEach((match, index) => {
+            console.log(`Match ${index + 1} (${match.roomId}): ${match.words.length} words found`);
+            if (match.words.length > 0) {
+              console.log("Sample words:", match.words.slice(0, 3));
+              console.log("All words by type:", {
+                objects: match.words.filter(w => w.type === 'object').length
+              });
+              console.log("Words by round:", match.words.reduce((acc, word) => {
+                if (!acc[word.round]) acc[word.round] = [];
+                acc[word.round].push(word);
+                return acc;
+              }, {}));
+            }
+          });
+          
+          setRecentMatches(matchesData);
+        } catch (error) {
+          console.error("Error loading recent matches:", error);
+        }
+      };
+
+      const toggleRecentMatches = () => {
+        if (!showRecentMatches) {
+          loadRecentMatches();
+        }
+        setShowRecentMatches(!showRecentMatches);
+      };
+
+      // UI: Leaderboard
+      const renderLeaderboard = () => (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-gray-800 p-8 rounded-lg shadow-2xl max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-3xl font-bold text-indigo-400">🏆 Leaderboard</h2>
+              <button
+                onClick={toggleLeaderboard}
+                className="text-gray-400 hover:text-white text-2xl"
+              >
+                ×
+              </button>
+            </div>
+            
+            {leaderboard.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">
+                <div className="text-4xl mb-4">🎮</div>
+                <p>No players yet! Be the first to play and get on the leaderboard!</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {leaderboard.map((player, index) => (
+                  <div
+                    key={index}
+                    className={`flex justify-between items-center p-4 rounded-lg ${
+                      index === 0 ? 'bg-yellow-600' : 
+                      index === 1 ? 'bg-gray-600' : 
+                      index === 2 ? 'bg-orange-600' : 
+                      'bg-gray-700'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <span className="text-2xl font-bold">
+                        {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}
+                      </span>
+                      <span className="text-lg font-semibold text-white">{player.name}</span>
+                    </div>
+                    <span className="text-xl font-bold text-green-400">{player.score} pts</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            <div className="mt-6 text-center">
+              <button
+                onClick={toggleLeaderboard}
+                className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+
+      // UI: Recent Matches
+      const renderRecentMatches = () => (
+        <div className="w-full max-w-4xl mt-6 bg-gray-800 p-6 rounded-lg shadow-lg">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-2xl font-bold text-indigo-400">📝 Your Last 3 Matches</h3>
+            <button
+              onClick={() => setShowRecentMatches(!showRecentMatches)}
+              className="text-sm bg-indigo-600 hover:bg-indigo-700 px-3 py-1 rounded"
+            >
+              {showRecentMatches ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          
+          {showRecentMatches && (
+            recentMatches.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">
+                <div className="text-4xl mb-4">🎮</div>
+                <p>No recent matches yet. Play some games to see all the words discussed here!</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {recentMatches.map((match, index) => (
+                  <div key={index} className="bg-gray-700 p-6 rounded-lg border border-gray-600">
+                    <div className="flex justify-between items-center mb-4">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-xl font-bold text-green-400">Match #{match.matchNumber}</span>
+                        <span className="text-sm bg-gray-600 px-2 py-1 rounded text-gray-300">
+                          {match.gameStatus === 'game_over' ? 'Completed' : 'In Progress'}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm text-gray-400">
+                          {match.players.length} player{match.players.length > 1 ? 's' : ''}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {match.totalRounds} round{match.totalRounds > 1 ? 's' : ''}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="text-sm text-gray-300 mb-4">
+                      <strong>Players:</strong> {match.players.join(', ')}
+                    </div>
+                    
+                    {match.words.length > 0 ? (
+                      <div className="space-y-4">
+                        <h4 className="text-lg font-semibold text-yellow-400 mb-3">
+                          All Words Discussed ({match.words.length} total)
+                        </h4>
+                        
+                        {/* Group words by rounds for better organization */}
+                        {(() => {
+                          const wordsByRound = match.words.reduce((acc, wordData) => {
+                            const round = wordData.round || 1;
+                            if (!acc[round]) acc[round] = [];
+                            acc[round].push(wordData);
+                            return acc;
+                          }, {});
+                          
+                          const typeLabels = {
+                            'object': '🎯 Object'
+                          };
+                          
+                          const typeColors = {
+                            'object': 'bg-blue-600'
+                          };
+                          
+                          return Object.entries(wordsByRound)
+                            .sort(([a], [b]) => parseInt(a) - parseInt(b))
+                            .map(([roundNum, words]) => (
+                              <div key={roundNum} className="space-y-3 mb-4 p-4 bg-gray-600 rounded-lg">
+                                <h5 className="text-lg font-bold text-yellow-400 flex items-center">
+                                  Round {roundNum} ({words.length} words)
+                                </h5>
+                                <div className="flex flex-wrap gap-2">
+                                  {words.map((wordData, idx) => (
+                                    <div 
+                                      key={idx} 
+                                      className={`${typeColors[wordData.type] || 'bg-gray-600'} px-3 py-2 rounded-lg text-sm flex items-center space-x-2`}
+                                    >
+                                      <span className="font-semibold text-white">{wordData.word}</span>
+                                      <span className="text-gray-200 text-xs">
+                                        {typeLabels[wordData.type] || wordData.type}
+                                      </span>
+                                      <span className="text-gray-200 text-xs">
+                                        by {wordData.player}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ));
+                        })()}
+                        
+                        {/* Summary stats */}
+                        <div className="mt-4 pt-4 border-t border-gray-600">
+                          <div className="text-center">
+                            <div className="text-lg font-bold text-blue-400">
+                              {match.words.filter(w => w.type === 'object').length}
+                            </div>
+                            <div className="text-gray-400">Objects Submitted</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-gray-400 text-sm text-center py-4">
+                        No words recorded yet
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          )}
+        </div>
+      );
 
       // UI: Home
       const renderHome = () => (
@@ -1171,6 +1197,24 @@
               placeholder="Your name (e.g., John)"
               className="w-full px-4 py-3 text-lg rounded-lg text-gray-900"
             />
+            <div className="flex items-center space-x-4">
+              <label className="text-lg text-gray-300 font-medium">Number of Rounds:</label>
+              <select
+                value={numberOfRounds}
+                onChange={(e) => {
+                  const rounds = parseInt(e.target.value);
+                  setNumberOfRounds(rounds);
+                  localStorage.setItem("cc_rounds", rounds.toString());
+                }}
+                className="px-4 py-2 text-lg rounded-lg text-gray-900 bg-white"
+              >
+                <option value={1}>1 Round</option>
+                <option value={2}>2 Rounds</option>
+                <option value={3}>3 Rounds</option>
+                <option value={4}>4 Rounds</option>
+                <option value={5}>5 Rounds</option>
+              </select>
+            </div>
             <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
               <button
                 onClick={createRoom}
@@ -1196,6 +1240,19 @@
                 </button>
               </div>
             </div>
+            
+            {/* Leaderboard Button */}
+            <div className="mt-6 text-center">
+              <button
+                onClick={toggleLeaderboard}
+                className="px-8 py-3 text-lg font-bold bg-yellow-600 hover:bg-yellow-700 transition-all duration-300 rounded-lg shadow-lg transform hover:scale-105"
+              >
+                🏆 View Leaderboard
+              </button>
+            </div>
+            
+            {/* Recent Matches Section */}
+            {renderRecentMatches()}
           </div>
         </div>
       );
@@ -1277,6 +1334,10 @@
             </div>
 
             <div className="bg-gray-700 p-6 rounded-lg text-center mb-6 min-h-[150px] flex items-center justify-center">
+              {gameData.roundStatus === "generating" && (
+                <p className="text-xl text-yellow-400 animate-pulse">✨ Generating riddle…</p>
+              )}
+ 
               {gameData.status === "in_progress" && gameData.roundStatus === "guessing" && (
                 <div className="flex flex-col">
                   <p className="text-2xl font-medium text-yellow-300">{riddle}</p>
@@ -1332,7 +1393,6 @@
               </div>
             )}
 
-            {/* Submit UI (only for turn-owner during submitting) */}
             {gameData.status === "in_progress" &&
              gameData.roundStatus === "submitting" &&
              gameData.turn === user?.uid && (
@@ -1403,6 +1463,27 @@
           </button>
         </div>
       );
+      
+      const renderParentView = () => (
+        <div className="p-6 bg-gray-900 text-white min-h-screen">
+          <h1 className="text-3xl font-bold mb-4 text-indigo-400">Parent Dashboard</h1>
+          {!session ? (
+            <p className="text-gray-400">Loading latest session...</p>
+          ) : (
+            <>
+              <h2 className="text-xl mb-2">Session Summary</h2>
+              <ul className="mb-4">
+                {session.objects.map((o, i) => (
+                  <li key={i}>🔹 {o}</li>
+                ))}
+              </ul>
+              <p><strong>Skills practiced:</strong> {session.skills.join(", ")}</p>
+              <p className="mt-2 text-green-400">{session.recap}</p>
+            </>
+          )}
+        </div>
+      );
+
 
       if (!isAuthReady) {
         return (
@@ -1413,13 +1494,21 @@
         );
       }
 
-      switch (page) {
-        case "home": return renderHome();
-        case "game-lobby": return renderGameLobby();
-        case "game-room": return renderGameRoom();
-        case "game-over": return renderGameOver();
-        default: return renderHome();
-      }
+      return (
+        <>
+          {(() => {
+            switch (page) {
+              case "home": return renderHome();
+              case "game-lobby": return renderGameLobby();
+              case "game-room": return renderGameRoom();
+              case "game-over": return renderGameOver();
+              case "parent": return renderParentView();
+              default: return renderHome();
+            }
+          })()}
+          {showLeaderboard && renderLeaderboard()}
+        </>
+      );
     }
 
     // Error boundary to avoid "blank screen"
@@ -1454,3 +1543,4 @@
   </script>
 </body>
 </html>
+
