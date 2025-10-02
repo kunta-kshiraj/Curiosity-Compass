@@ -1,3 +1,4 @@
+Demo Link: https://drive.google.com/file/d/1xNJ7jixEr2uS24F9tMjidE-ZoXjJy5rY/view?usp=drive_link
 # Curiosity Compass - Parent-Child Learning Platform
 
 A multiplayer riddle-solving game that combines playful AI engagement for children with comprehensive learning insights and safety measures for parents.
